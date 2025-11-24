@@ -1,0 +1,16 @@
+{
+  "name": "cloud_function",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "firebase-tools": "^14.24.1",
+    "typescript": "^5.9.3"
+  }
+}
