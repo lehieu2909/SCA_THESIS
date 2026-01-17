@@ -25,9 +25,9 @@ bool prevConnected = false;
 BLECharacteristic *pCharacteristic;
 
 // ===== UWB Configuration =====
-#define PIN_RST 27
-#define PIN_IRQ 34
-#define PIN_SS 4
+#define PIN_RST 4
+#define PIN_IRQ 5
+#define PIN_SS 10
 
 #define TX_ANT_DLY 16385
 #define RX_ANT_DLY 16385
@@ -75,11 +75,13 @@ class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) {
     deviceConnected = true;
     Serial.println("✓ BLE: Tag connected!");
+    delay(100); // Give time for connection to stabilize
   };
 
   void onDisconnect(BLEServer* pServer) {
     deviceConnected = false;
     Serial.println("✗ BLE: Tag disconnected!");
+    delay(100);
   }
 };
 
@@ -91,7 +93,7 @@ void initUWB() {
   
   // Initialize SPI and reset DW3000
   spiBegin(PIN_IRQ, PIN_RST);
-  reselect(PIN_SS);
+  spiSelect(PIN_SS);
   
   delay(2); // Time needed for DW3000 to start up
   
@@ -194,24 +196,6 @@ void uwbResponderLoop() {
   }
 }
 
-uint64_t get_rx_timestamp_u64(void) {
-  uint8_t ts_tab[5];
-  uint64_t ts = 0;
-  dwt_readrxtimestamp(ts_tab);
-  for (int i = 4; i >= 0; i--) {
-    ts <<= 8;
-    ts |= ts_tab[i];
-  }
-  return ts;
-}
-
-void resp_msg_set_ts(uint8_t *ts_field, uint64_t ts) {
-  for (int i = 0; i < RESP_MSG_TS_LEN; i++) {
-    ts_field[i] = (uint8_t)ts;
-    ts >>= 8;
-  }
-}
-
 // ===== Setup =====
 void setup() {
   Serial.begin(115200);
@@ -239,8 +223,8 @@ void setup() {
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);
-  pAdvertising->setMinPreferred(0x12);
+  pAdvertising->setMinPreferred(0x06);  // Help with iOS connections
+  pAdvertising->setMaxPreferred(0x12);
   BLEDevice::startAdvertising();
   
   Serial.println("✓ BLE: Advertising started");

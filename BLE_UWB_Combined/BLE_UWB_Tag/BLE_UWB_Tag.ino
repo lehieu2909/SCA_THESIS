@@ -32,9 +32,9 @@ bool connected = false;
 bool doScan = false;
 
 // ===== UWB Configuration =====
-#define PIN_RST 27
-#define PIN_IRQ 34
-#define PIN_SS 4
+#define PIN_RST 4
+#define PIN_IRQ 5
+#define PIN_SS 10
 
 #define RNG_DELAY_MS 1000
 #define TX_ANT_DLY 16385
@@ -103,6 +103,7 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic,
 
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pclient) {
+    connected = true;
     Serial.println("✓ BLE: Connected to Anchor!");
   }
 
@@ -113,11 +114,19 @@ class MyClientCallback : public BLEClientCallbacks {
   }
 };
 
+static MyClientCallback clientCallback;
+
 bool connectToServer() {
   Serial.println("🔗 Connecting to Anchor...");
   
+  // Clean up old client if exists
+  if (pClient != nullptr) {
+    delete pClient;
+    pClient = nullptr;
+  }
+  
   pClient = BLEDevice::createClient();
-  pClient->setClientCallbacks(new MyClientCallback());
+  pClient->setClientCallbacks(&clientCallback);
   
   if (!pClient->connect(myDevice)) {
     Serial.println("✗ Connection failed!");
@@ -125,6 +134,7 @@ bool connectToServer() {
   }
   
   Serial.println("✓ Connected!");
+  delay(100);
   
   BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
   if (pRemoteService == nullptr) {
@@ -133,6 +143,8 @@ bool connectToServer() {
     return false;
   }
   
+  Serial.println("✓ Service found");
+  
   pRemoteCharacteristic = pRemoteService->getCharacteristic(CHARACTERISTIC_UUID);
   if (pRemoteCharacteristic == nullptr) {
     Serial.println("✗ Failed to find characteristic UUID");
@@ -140,10 +152,13 @@ bool connectToServer() {
     return false;
   }
   
+  Serial.println("✓ Characteristic found");
+  
   if (pRemoteCharacteristic->canNotify())
     pRemoteCharacteristic->registerForNotify(notifyCallback);
   
   connected = true;
+  Serial.println("✓ Connection established!");
   return true;
 }
 
@@ -155,7 +170,7 @@ void initUWB() {
   
   // Initialize SPI and reset DW3000
   spiBegin(PIN_IRQ, PIN_RST);
-  reselect(PIN_SS);
+  spiSelect(PIN_SS);
   
   delay(2); // Time needed for DW3000 to start up
   
@@ -277,35 +292,6 @@ void uwbInitiatorLoop() {
   }
 }
 
-uint64_t get_tx_timestamp_u64(void) {
-  uint8_t ts_tab[5];
-  uint64_t ts = 0;
-  dwt_readtxtimestamp(ts_tab);
-  for (int i = 4; i >= 0; i--) {
-    ts <<= 8;
-    ts |= ts_tab[i];
-  }
-  return ts;
-}
-
-uint64_t get_rx_timestamp_u64(void) {
-  uint8_t ts_tab[5];
-  uint64_t ts = 0;
-  dwt_readrxtimestamp(ts_tab);
-  for (int i = 4; i >= 0; i--) {
-    ts <<= 8;
-    ts |= ts_tab[i];
-  }
-  return ts;
-}
-
-void resp_msg_get_ts(const uint8_t *ts_field, uint32_t *ts) {
-  *ts = 0;
-  for (int i = 0; i < RESP_MSG_TS_LEN; i++) {
-    *ts += ts_field[i] << (i * 8);
-  }
-}
-
 // ===== Setup =====
 void setup() {
   Serial.begin(115200);
@@ -341,6 +327,7 @@ void loop() {
       }
     } else {
       Serial.println("✗ Failed to connect, retrying...");
+      delay(1000); // Wait before retry
       doScan = true;
     }
     doConnect = false;
