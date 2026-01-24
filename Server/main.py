@@ -82,6 +82,84 @@ class PairingResponse(BaseModel):
     nonce_b64: str
 
 
+class SecureCheckRequest(BaseModel):
+    vehicle_id: str
+    client_public_key_b64: str
+
+
+class SecureCheckResponse(BaseModel):
+    server_public_key_b64: str
+    encrypted_data_b64: str
+    nonce_b64: str
+
+
+@app.post("/secure-check-pairing", response_model=SecureCheckResponse)
+def secure_check_pairing(req: SecureCheckRequest):
+    """Securely check if a vehicle is paired using ECDH + AES-GCM encryption"""
+
+    # Load client public key
+    try:
+        client_pub_bytes = base64.b64decode(req.client_public_key_b64)
+        client_public_key = serialization.load_der_public_key(client_pub_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid client public key")
+
+    # Generate server ephemeral EC key
+    server_private_key = ec.generate_private_key(ec.SECP256R1())
+    server_public_key = server_private_key.public_key()
+
+    # Perform ECDH
+    shared_secret = server_private_key.exchange(ec.ECDH(), client_public_key)
+
+    # Derive KEK
+    kek = HKDF(
+        algorithm=hashes.SHA256(),
+        length=16,
+        salt=None,
+        info=b"secure-check-kek",
+    ).derive(shared_secret)
+
+    # Get pairing status
+    vehicle_data = get_vehicle_pairing(req.vehicle_id)
+
+    if vehicle_data:
+        response_data = {
+            "paired": True,
+            "vehicle_id": req.vehicle_id,
+            "pairing_id": vehicle_data["pairing_id"],
+            "paired_at": vehicle_data["created_at"]
+        }
+    else:
+        response_data = {
+            "paired": False,
+            "vehicle_id": req.vehicle_id,
+            "message": "Vehicle not paired"
+        }
+
+    # Convert to JSON string
+    import json
+    response_json = json.dumps(response_data)
+
+    # Encrypt response
+    aesgcm = AESGCM(kek)
+    nonce = os.urandom(12)
+    encrypted_data = aesgcm.encrypt(nonce, response_json.encode(), None)
+
+    # Serialize server public key
+    server_pub_bytes = server_public_key.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+
+    print(f"✓ Secure check for vehicle {req.vehicle_id}: {'PAIRED' if vehicle_data else 'NOT PAIRED'}")
+
+    return SecureCheckResponse(
+        server_public_key_b64=base64.b64encode(server_pub_bytes).decode(),
+        encrypted_data_b64=base64.b64encode(encrypted_data).decode(),
+        nonce_b64=base64.b64encode(nonce).decode()
+    )
+
+
 @app.get("/check-pairing/{vehicle_id}")
 def check_pairing_status(vehicle_id: str):
     """Check if a vehicle is already paired"""
@@ -228,7 +306,8 @@ def root():
         "message": "Smart Car Access Server",
         "database": "SQLite (car_access.db)",
         "endpoints": {
-            "GET /check-pairing/{vehicle_id}": "Check if vehicle is paired",
+            "POST /secure-check-pairing": "Securely check if vehicle is paired (encrypted)",
+            "GET /check-pairing/{vehicle_id}": "Check if vehicle is paired (unencrypted)",
             "POST /owner-pairing": "Pair vehicle and store key in database",
             "GET /vehicle/{vehicle_id}": "Get vehicle info",
             "GET /vehicles": "List all vehicles",
@@ -247,7 +326,8 @@ async def startup_event():
     print("Database: car_access.db (SQLite)")
     print("Pairing keys are now stored persistently!")
     print("\nAvailable Endpoints:")
-    print("  GET  /check-pairing/{vehicle_id}")
+    print("  POST /secure-check-pairing (ENCRYPTED)")
+    print("  GET  /check-pairing/{vehicle_id} (PLAIN)")
     print("  POST /owner-pairing")
     print("  GET  /vehicle/{vehicle_id}")
     print("  GET  /vehicles")
