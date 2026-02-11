@@ -127,7 +127,8 @@ def secure_check_pairing(req: SecureCheckRequest):
             "paired": True,
             "vehicle_id": req.vehicle_id,
             "pairing_id": vehicle_data["pairing_id"],
-            "paired_at": vehicle_data["created_at"]
+            "paired_at": vehicle_data["created_at"],
+            "pairing_key": vehicle_data["pairing_key"].hex()  # ← THÊM DÒNG NÀY!
         }
     else:
         response_data = {
