@@ -47,41 +47,19 @@ Traditional keyless entry systems (LF/RF) are vulnerable to:
 | **ECC-256 + AES-256** | End-to-end encryption | Industry standard security |
 | **CAN Bus** | Vehicle control | ISO 11898 compliant |
 
-**Time-of-Flight Formula:**
-```
-Distance = (ToF × 3×10⁸ m/s) / 2
-Max_ToF = 6.67ns for 1m → Detects relay delays >1ns
-```
+UWB ranging uses Time-of-Flight measurement with ±10cm accuracy, capable of detecting relay attack delays as small as 1 nanosecond.
 
 ---
 
 ## System Architecture
 
-### Overall System Design
-
 ![System Architecture](Diagram/z7525095032747_010be537974b6ea477c51593dc253996.jpg)
 
 The system consists of three main components: Cloud Server for user management and key distribution, Mobile App as the Digital Key, and Vehicle Gateway for authentication and control via CAN Bus.
 
-### Key Exchange Protocol
-
-![Key Exchange](Diagram/Key%20Exchange.png)
-
-Secure key exchange between devices using ECC-256 cryptography and certificate-based authentication.
-
-### Passive Entry Flow
-
-![Passive Entry](Diagram/z7525095141318_785866d6019ede43a29c7ee8a6d51bb5.jpg)
-
-Complete workflow from BLE discovery to automatic door unlock with UWB distance verification.
-
 ---
 
 ## Technical Specifications
-
-### System Overview
-
-![Hardware Architecture](Diagram/z7525095519845_94d8db78dc9aa460de78c192849dc3b0.jpg)
 
 ### Hardware
 
@@ -123,8 +101,6 @@ Complete workflow from BLE discovery to automatic door unlock with UWB distance 
 - Public key exchange over BLE, private key → Secure Enclave
 
 ### 2. Friend Sharing (Max 5 Users)
-
-![Friend Sharing Architecture](Diagram/Friend_ShARe.jpg)
 
 | Access Level | Permissions | Use Case |
 |--------------|-------------|----------|
@@ -221,41 +197,18 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 ## Security Architecture
 
-### Security Layers
-
-![Security Architecture](Diagram/z7525095685023_9c6e9cad44d4762645e288b71510eab6.jpg)
-
-### Multi-Layer Defense
-
-```
-Layer 4: Application   │ Secure Enclave, ACL, Cert-based auth
-Layer 3: Cryptography  │ AES-256-GCM, ECDSA, HMAC-SHA256
-Layer 2: Network       │ BLE encryption, Challenge-Response
-Layer 1: Physical      │ UWB ToF, STS, Position verification
-```
-
 ### Relay Attack Mitigation
 
-```python
-MAX_RANGE = 1.0  # meters
-SPEED_OF_LIGHT = 3e8  # m/s
-MAX_TOF = (2 * MAX_RANGE) / SPEED_OF_LIGHT  # 6.67ns
+UWB Time-of-Flight measurement detects any relay device delays:
+- Maximum acceptable ToF for 1m range: 6.67 nanoseconds
+- Any additional delay triggers security alert
+- Combined with encrypted BLE authentication
 
-if measured_tof > MAX_TOF:
-    reject_access()  # Relay detected
-    log_security_event()
-```
-
-### Key Hierarchy
-
-```
-Root CA (Server) → Vehicle Key → Gateway Identity
-                 → Owner Key → Friend Key 1-5
-```
-
-- **Session Keys:** Regenerated per connection
-- **Long-term Keys:** 1-year validity, auto-renewal
-- **Revocation:** Remote key revoke via server API
+### Key Management
+- ECC-256 keypair per user, stored in Secure Enclave/TEE
+- Session keys regenerated per connection
+- Long-term keys valid for 1 year with auto-renewal
+- Remote key revocation via server API
 
 ---
 
