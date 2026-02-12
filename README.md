@@ -57,37 +57,31 @@ Max_ToF = 6.67ns for 1m → Detects relay delays >1ns
 
 ## System Architecture
 
-```
-┌─────────────────┐         HTTPS/TLS          ┌─────────────────┐
-│  Cloud Server   │◄──────────────────────────►│   Mobile App    │
-│  Key Management │                             │  (Digital Key)  │
-└─────────────────┘                             └────────┬────────┘
-                                                         │
-                                         BLE Discovery   │ UWB Ranging
-                                            ↓            ↓
-                                    ┌───────────────────────┐
-                                    │   Vehicle Gateway     │
-                                    │  (ESP32-S3 + DW3000)  │
-                                    └──────────┬────────────┘
-                                               │ CAN Bus
-                                    ┌──────────┴────────────┐
-                                    │    Vehicle ECUs       │
-                                    │  (Door, Ignition,     │
-                                    │   Lights, Sensors)    │
-                                    └───────────────────────┘
-```
+### Overall System Design
+
+![System Architecture](Diagram/z7525095032747_010be537974b6ea477c51593dc253996.jpg)
+
+The system consists of three main components: Cloud Server for user management and key distribution, Mobile App as the Digital Key, and Vehicle Gateway for authentication and control via CAN Bus.
+
+### Key Exchange Protocol
+
+![Key Exchange](Diagram/Key%20Exchange.png)
+
+Secure key exchange between devices using ECC-256 cryptography and certificate-based authentication.
 
 ### Passive Entry Flow
 
-```
-1. BLE Scan (10m) → 2. Challenge-Response Auth → 3. UWB Init
-      ↓                        ↓                         ↓
-4. Measure Distance (±10cm) → 5. Verify Position → 6. Unlock Door
-```
+![Passive Entry](Diagram/z7525095141318_785866d6019ede43a29c7ee8a6d51bb5.jpg)
+
+Complete workflow from BLE discovery to automatic door unlock with UWB distance verification.
 
 ---
 
 ## Technical Specifications
+
+### System Overview
+
+![Hardware Architecture](Diagram/z7525095519845_94d8db78dc9aa460de78c192849dc3b0.jpg)
 
 ### Hardware
 
@@ -129,6 +123,8 @@ Max_ToF = 6.67ns for 1m → Detects relay delays >1ns
 - Public key exchange over BLE, private key → Secure Enclave
 
 ### 2. Friend Sharing (Max 5 Users)
+
+![Friend Sharing Architecture](Diagram/Friend_ShARe.jpg)
 
 | Access Level | Permissions | Use Case |
 |--------------|-------------|----------|
@@ -224,6 +220,10 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 ---
 
 ## Security Architecture
+
+### Security Layers
+
+![Security Architecture](Diagram/z7525095685023_9c6e9cad44d4762645e288b71510eab6.jpg)
 
 ### Multi-Layer Defense
 
