@@ -19,9 +19,10 @@
 #include <BLEAdvertisedDevice.h>
 
 // Tham số cho việc tính khoảng cách
-#define RSSI_1M -59        // RSSI ở khoảng cách 1m (cần hiệu chỉnh)
-#define ENV_FACTOR 2.0     // Hệ số môi trường (2-4)
+#define RSSI_1M -69        // RSSI ở khoảng cách 1m (đã hiệu chỉnh cho ESP32)
+#define ENV_FACTOR 2.5     // Hệ số môi trường (2-4)
                            // 2: không gian mở
+                           // 2.5: môi trường thông thường
                            // 3-4: có vật cản
 
 // Thông tin BLE Server cần tìm
@@ -78,11 +79,11 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             }
             
             // Phân loại khoảng cách
-            if (distance < 0.5) {
+            if (distance < 1.0) {
               Serial.println("Signal: IMMEDIATE (Very Close)");
-            } else if (distance < 2.0) {
+            } else if (distance < 3.0) {
               Serial.println("Signal: NEAR");
-            } else if (distance < 5.0) {
+            } else if (distance < 6.0) {
               Serial.println("Signal: FAR");
             } else {
               Serial.println("Signal: VERY FAR");
@@ -120,7 +121,7 @@ void setup() {
 void loop() {
   // Scan trong 5 giây
   serverFound = false;
-  BLEScanResults foundDevices = pBLEScan->start(5, false);
+  BLEScanResults* foundDevices = pBLEScan->start(5, false);
   
   if (!serverFound) {
     Serial.println("Server not found. Retrying...");
