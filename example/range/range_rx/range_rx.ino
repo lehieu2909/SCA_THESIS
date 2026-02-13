@@ -1,6 +1,6 @@
 #include "dw3000.h"
 
-#define PIN_RST 4
+#define PIN_RST 6
 #define PIN_IRQ 5
 #define PIN_SS 10
 
