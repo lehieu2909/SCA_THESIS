@@ -1,6 +1,6 @@
 #include "dw3000.h"
 
-#define PIN_RST 6
+#define PIN_RST 4
 #define PIN_IRQ 5
 #define PIN_SS 10
 
@@ -13,8 +13,7 @@
 #define RESP_MSG_RESP_TX_TS_IDX 14
 #define RESP_MSG_TS_LEN 4
 #define POLL_TX_TO_RESP_RX_DLY_UUS 500
-#define RESP_RX_TIMEOUT_UUS 1000
-
+#define RESP_RX_TIMEOUT_UUS 2000
 /* Default communication configuration. We use default non-STS DW mode. */
 static dwt_config_t config = {
     5,                /* Channel number. */
