@@ -127,7 +127,7 @@ static bool carUnlocked = false;
 #define RESP_MSG_TS_LEN (4U)
 
 /** @brief Độ trễ từ Poll RX đến Response TX tính bằng micro giây */
-#define POLL_RX_TO_RESP_TX_DLY_UUS (650U)
+#define POLL_RX_TO_RESP_TX_DLY_UUS (800U) /* Tăng để đảm bảo đủ thời gian xử lý */
 
 /** @brief Kích thước buffer tin nhắn tính bằng byte */
 #define MSG_BUFFER_SIZE (20U)
@@ -232,42 +232,95 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks {
       if (value.startsWith("VERIFIED:")) {
         Serial.println("Khoang cach da xac minh boi Tag - An toan de mo khoa");
         
-        /* Kích hoạt cơ chế mở khóa xe */
-        if (pCanControl != nullptr && !carUnlocked) {
-          Serial.println("\n>>> DANG MO KHOA XE <<<");
-          if (pCanControl->unlockCar()) {
-            carUnlocked = true;
-            Serial.println(">>> XE DA DUOC MO KHOA <<<\n");
-          } else {
-            Serial.println(">>> LOI: Khong the mo khoa xe <<<\n");
-          }
+        /* In thông báo mở khóa (TEST MODE - không gửi CAN) */
+        if (!carUnlocked) {
+          Serial.println("\n>>> CHO PHEP MO KHOA XE <<<");
+          Serial.println(">>> XE DUOC MO KHOA (TEST MODE) <<<\n");
+          carUnlocked = true;
+          // Commented out CAN command for testing without car model:
+          // if (pCanControl != nullptr) {
+          //   pCanControl->unlockCar();
+          // }
         }
       }
-      /* Kiểm tra yêu cầu khóa xe khi ra khỏi ngưỡng */
-      else if (value.startsWith("LOCK_CAR")) {
-        Serial.println("Tag ra khoi nguong - Dang khoa xe lai...");
+      /* Kiểm tra cảnh báo khoảng cách (> 3m) */
+      else if (value.startsWith("WARNING:")) {
+        Serial.println("CANH BAO: Tag vuot nguong 3m - Dang khoa xe");
+        Serial.println("(UWB van tiep tuc do khoang cach)");
         
-        /* Khóa xe lại */
-        if (pCanControl != nullptr && carUnlocked) {
+        /* Khóa xe nhưng KHÔNG tắt UWB */
+        if (carUnlocked) {
           Serial.println("\n>>> DANG KHOA XE <<<");
-          if (pCanControl->lockCar()) {
-            carUnlocked = false;
-            Serial.println(">>> XE DA DUOC KHOA <<<\n");
-          } else {
-            Serial.println(">>> LOI: Khong the khoa xe <<<\n");
-          }
+          Serial.println(">>> XE DA DUOC KHOA (TEST MODE) <<<\n");
+          carUnlocked = false;
+          // Commented out CAN command for testing without car model:
+          // if (pCanControl != nullptr) {
+          //   pCanControl->lockCar();
+          // }
+        }
+      }
+      /* Kiểm tra yêu cầu khóa xe (KHÔNG tắt UWB) */
+      else if (value.startsWith("LOCK_CAR")) {
+        Serial.println("Tag yeu cau khoa xe (khoang cach > 3m)");
+        
+        /* Khóa xe nhưng KHÔNG tắt UWB - Tag vẫn đang trong vùng 20m */
+        if (carUnlocked) {
+          Serial.println("\n>>> DANG KHOA XE <<<");
+          Serial.println(">>> XE DA DUOC KHOA (TEST MODE) <<<");
+          Serial.println(">>> UWB VAN HOAT DONG - TIEP TUC DO <<<\n");
+          carUnlocked = false;
+          // Commented out CAN command for testing without car model:
+          // if (pCanControl != nullptr) {
+          //   pCanControl->lockCar();
+          // }
+        }
+      }
+      /* Kiểm tra yêu cầu TẮT UWB (Tag ra khỏi 20m) */
+      else if (value.startsWith("UWB_STOP")) {
+        Serial.println("\n>>> NHAN LENH UWB_STOP TU TAG <<<");
+        Serial.println("Tag da ra khoi 20m - Dang tat UWB...");
+        
+        /* Khóa xe nếu chưa khóa */
+        if (carUnlocked) {
+          Serial.println(">>> DANG KHOA XE <<<");
+          Serial.println(">>> XE DA DUOC KHOA (TEST MODE) <<<");
+          carUnlocked = false;
         }
         
-        /* Tắt UWB khi Tag ra khỏi ngưỡng để tiết kiệm năng lượng */
+        /* Tắt UWB để tiết kiệm năng lượng */
         deinitUWB();
-        Serial.println("UWB da tat - Se kich hoat lai khi Tag quay ve gan");
+        
+        /* Reset cờ và thời gian để cho phép tự động bật lại UWB khi Tag quay về */
+        uwbActivationRequested = false;
+        connectionTime = millis(); /* Khởi động lại timer để đợi Tag xác minh RSSI */
+        
+        Serial.println("UWB da tat - Se kich hoat lai khi Tag quay ve trong 20m\n");
       }
       /* Kiểm tra cảnh báo bảo mật */
       else if (value.startsWith("ALERT:RELAY_ATTACK")) {
         Serial.println("CANH BAO BAO MAT: Phat hien tan cong relay!");
         Serial.println("Xe giu nguyen khoa");
         /* TODO: Ghi lại sự kiện bảo mật, có thể kích hoạt báo động */
-      } else {
+      }
+      /* Kiểm tra yêu cầu khởi tạo UWB từ Tag */
+      else if (value.startsWith("TAG_UWB_READY")) {
+        Serial.println("\n>>> NHAN TIN HIEU TAG_UWB_READY <<<");
+        Serial.println("Tag da san sang - Khoi tao UWB ngay lap tuc...");
+        
+        if (!uwbInitialized) {
+          initUWB();
+          
+          /* Gửi xác nhận UWB đã sẵn sàng */
+          if (pCharacteristic != nullptr) {
+            pCharacteristic->setValue("UWB_ACTIVE");
+            pCharacteristic->notify();
+            Serial.println(">>> Da gui notification UWB_ACTIVE den Tag!");
+          }
+        } else {
+          Serial.println("UWB da duoc khoi tao truoc do");
+        }
+      }
+      else {
         /* Tin nhắn không xác định - bỏ qua */
       }
     }
@@ -316,23 +369,32 @@ class MyServerCallbacks : public BLEServerCallbacks {
     deviceConnected = false;
     uwbActivationRequested = false;
     
-    /* Khóa xe khi Tag ngắt kết nối (ra khỏi khoảng cách) */
-    if (pCanControl != nullptr && carUnlocked) {
-      Serial.println("\n>>> TAG DA RA KHOI KHOANG CACH <<<");
+    Serial.println("\n========================================");
+    Serial.println("BLE: Tag da ngat ket noi!");
+    
+    /* In thông báo khóa xe khi Tag ngắt kết nối (TEST MODE) */
+    if (carUnlocked) {
+      Serial.println(">>> TAG DA RA KHOI KHOANG CACH <<<");
       Serial.println(">>> DANG KHOA XE <<<");
-      if (pCanControl->lockCar()) {
-        carUnlocked = false;
-        Serial.println(">>> XE DA DUOC KHOA <<<\n");
-      } else {
-        Serial.println(">>> LOI: Khong the khoa xe <<<\n");
-      }
+      Serial.println(">>> XE DA DUOC KHOA (TEST MODE) <<<");
+      carUnlocked = false;
+      // Commented out CAN command for testing without car model:
+      // if (pCanControl != nullptr) {
+      //   pCanControl->lockCar();
+      // }
     }
     
     /* Tắt UWB khi mất kết nối để tiết kiệm năng lượng */
     deinitUWB();
     
-    Serial.println("BLE: Tag da ngat ket noi!");
-    delay(100);
+    Serial.println("Dang cho ket noi lai...");
+    Serial.println("Anchor dang phat lai BLE...");
+    Serial.println("========================================\n");
+    
+    /* Restart advertising ngay lập tức */
+    delay(100); /* Để BLE stack ổn định */
+    BLEDevice::startAdvertising();
+    Serial.println("BLE: Da bat dau phat lai - San sang cho ket noi moi");
   }
 };
 
@@ -639,8 +701,12 @@ void loop(void) {
       
       /* Thông báo cho Tag rằng UWB đang hoạt động */
       if (pCharacteristic != nullptr) {
+        Serial.println(">>> Dang gui notification UWB_ACTIVE den Tag...");
         pCharacteristic->setValue("UWB_ACTIVE");
         pCharacteristic->notify();
+        Serial.println(">>> Da gui notification UWB_ACTIVE!");
+      } else {
+        Serial.println("!!! LOI: pCharacteristic la nullptr - khong gui duoc notification!");
       }
     }
   }
@@ -648,9 +714,10 @@ void loop(void) {
   /* Xử lý ngắt kết nối BLE */
   if ((!deviceConnected) && prevConnected) {
     prevConnected = false;
-    Serial.println("Dang cho ket noi lai...");
-    delay(500);
+    Serial.println("[Auto-Reconnect] Dang cho Tag ket noi lai...");
+    delay(300); /* Đợi BLE stack ổn định */
     BLEDevice::startAdvertising();
+    Serial.println("[Auto-Reconnect] BLE da san sang cho ket noi moi");
   }
   
   /* Chạy đo khoảng cách UWB nếu đã kết nối và đã khởi tạo */

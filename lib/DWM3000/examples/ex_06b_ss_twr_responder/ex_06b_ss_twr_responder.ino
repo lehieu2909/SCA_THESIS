@@ -118,6 +118,8 @@ void setup() {
 void loop() {
         /* Activate reception immediately. */
         dwt_rxenable(DWT_START_RX_IMMEDIATE);
+        
+        Serial.println("Waiting for poll...");
 
         /* Poll for reception of a frame or error/timeout. See NOTE 6 below. */
         while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_ERR)))
@@ -141,6 +143,8 @@ void loop() {
                 rx_buffer[ALL_MSG_SN_IDX] = 0;
                 if (memcmp(rx_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) == 0)
                 {
+                    Serial.println("Poll received! Sending response...");
+                    
                     uint32_t resp_tx_time;
                     int ret;
 
@@ -176,7 +180,17 @@ void loop() {
 
                         /* Increment frame sequence number after transmission of the poll message (modulo 256). */
                         frame_seq_nb++;
+                        
+                        Serial.println("Response sent OK!");
                     }
+                    else
+                    {
+                        Serial.println("ERROR: Response TX failed (too late)!");
+                    }
+                }
+                else
+                {
+                    Serial.println("Frame format mismatch!");
                 }
             }
         }
@@ -184,6 +198,7 @@ void loop() {
         {
             /* Clear RX error events in the DW IC status register. */
             dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_ERR);
+            Serial.println("-> RX Error");
         }
 }
 

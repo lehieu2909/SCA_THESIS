@@ -14,7 +14,7 @@ extern SPISettings _fastSPI;
 #define RESP_MSG_POLL_RX_TS_IDX 10
 #define RESP_MSG_RESP_TX_TS_IDX 14
 #define RESP_MSG_TS_LEN 4
-#define POLL_RX_TO_RESP_TX_DLY_UUS 650
+#define POLL_RX_TO_RESP_TX_DLY_UUS 1000  // Tăng từ 650 lên 1000 để đủ thời gian xử lý
 
 /* Default communication configuration. We use default non-STS DW mode. */
 static dwt_config_t config = {
@@ -93,6 +93,7 @@ void setup()
 
   Serial.println("Range TX");
   Serial.println("Setup over........");
+  Serial.println("TX READY - Waiting for poll messages...");
 }
 
 void loop()
@@ -101,9 +102,18 @@ void loop()
   dwt_rxenable(DWT_START_RX_IMMEDIATE);
 
   /* Poll for reception of a frame or error/timeout. See NOTE 6 below. */
+  uint32_t timeout_count = 0;
   while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_ERR)))
   {
+    timeout_count++;
+    // Sau ~10 triệu lần lặp (~vài giây), in message để biết đang chờ
+    if (timeout_count >= 10000000) {
+      Serial.println("[TX] Waiting for RX initiator...");
+      timeout_count = 0;
+    }
   };
+  
+  Serial.println("-> RX event detected");
 
   if (status_reg & SYS_STATUS_RXFCG_BIT_MASK)
   {
@@ -123,6 +133,7 @@ void loop()
       rx_buffer[ALL_MSG_SN_IDX] = 0;
       if (memcmp(rx_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) == 0)
       {
+        Serial.println("-> Poll received! Sending response...");
         uint32_t resp_tx_time;
         int ret;
 
@@ -159,6 +170,12 @@ void loop()
 
           /* Increment frame sequence number after transmission of the poll message (modulo 256). */
           frame_seq_nb++;
+          
+          Serial.println("-> Response sent OK");
+        }
+        else
+        {
+          Serial.println("-> ERROR: Response TX failed (too late)!");
         }
       }
     }
@@ -167,5 +184,6 @@ void loop()
   {
     /* Clear RX error events in the DW IC status register. */
     dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_ERR);
+    Serial.println("-> RX Error");
   }
 }

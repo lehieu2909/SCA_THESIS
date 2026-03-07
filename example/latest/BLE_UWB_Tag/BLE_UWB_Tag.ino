@@ -16,10 +16,11 @@
  * @operation_flow
  * 1. Quét tìm Anchor qua BLE
  * 2. Kết nối đến Anchor và giám sát RSSI
- * 3. Khi RSSI cho thấy khoảng cách < 4.5m -> Khởi tạo UWB
+ * 3. Khi RSSI cho thấy khoảng cách < 20m -> Khởi tạo UWB
  * 4. Đo khoảng cách chính xác bằng UWB
- * 5. Xác minh khoảng cách < 5m để ngăn tấn công relay
- * 6. Gửi kết quả xác minh về Anchor
+ * 5. Khi khoảng cách < 3m -> Cho phép mở khóa xe
+ * 6. Khi khoảng cách > 3m -> Cảnh báo và khóa xe, NHƯNG VẪN TIẾP TỤC ĐO
+ * 7. Chỉ tắt UWB khi RSSI yếu (ra khỏi 20m)
  * 
  * @author Smart Car Access System
  * @version 2.0
@@ -33,8 +34,10 @@
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <BLEClient.h>
+#include <BLE2902.h>
 #include <SPI.h>
 #include "dw3000.h"
+#include <mbedtls/md.h>
 
 /* ========================================================================
  * Các Hằng Số Cấu Hình BLE
@@ -45,11 +48,21 @@
 /** @brief UUID của BLE Characteristic để trao đổi dữ liệu */
 #define CHARACTERISTIC_UUID "abcdef12-3456-7890-abcd-ef1234567890"
 
+/** @brief UUID cho Challenge-Response Authentication */
+#define AUTH_CHAR_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26a8"  // Tag gửi response
+#define CHALLENGE_CHAR_UUID "ceb5483e-36e1-4688-b7f5-ea07361b26a9"  // Anchor gửi challenge
+
+/** @brief Pairing key (32 hex chars = 16 bytes) - trong thực tế lấy từ Preferences */
+// Test với correct key hoặc wrong key
+const char* CORRECT_KEY_HEX = "bdadf9030fa5170947a509c7912fb438";
+const char* WRONG_KEY_HEX = "0000000000000000000000000000000";
+bool useCorrectKey = true;  // Đổi thành false để test với wrong key
+
 /* ========================================================================
  * Cấu Hình Phát Hiện Khoảng Cách Dựa Trên RSSI
  * ======================================================================== */
-/** @brief Ngưỡng RSSI tính bằng dBm cho khoảng cách ~4.5m (phụ thuộc hiệu chuẩn) */
-#define RSSI_THRESHOLD_DBM (-65)
+/** @brief Ngưỡng RSSI tính bằng dBm cho khoảng cách ~20m (phụ thuộc hiệu chuẩn) */
+#define RSSI_THRESHOLD_DBM (-100)
 
 /** @brief Khoảng thời gian kiểm tra RSSI tính bằng mili giây */
 #define RSSI_CHECK_INTERVAL_MS (500U)
@@ -57,11 +70,14 @@
 /** @brief Số lần đo RSSI liên tiếp yêu cầu vượt ngưỡng */
 #define RSSI_STABLE_COUNT_REQUIRED (3U)
 
-/** @brief Khoảng cách tối đa hợp lệ tính bằng mét để xác minh UWB */
-#define UWB_DISTANCE_LIMIT_METERS (0.5)
+/** @brief Khoảng cách cảnh báo tính bằng mét (chỉ cảnh báo, KHÔNG tắt UWB) */
+#define UWB_WARNING_DISTANCE_METERS (3.0)
 
-/** @brief Số lần liên tiếp ra khỏi ngưỡng trước khi tắt UWB (tiết kiệm năng lượng) */
-#define OUT_OF_RANGE_COUNT_TO_DISABLE_UWB (5U)
+/** @brief Khoảng cách tối đa cho phép mở khóa xe */
+#define UWB_UNLOCK_DISTANCE_METERS (3.0)
+
+/** @brief Số lần liên tiếp RSSI yếu để tắt UWB (ra khỏi 20m) */
+#define RSSI_WEAK_COUNT_TO_DISABLE_UWB (3U)
 
 /** @brief Giá trị RSSI ban đầu cho biết không có tín hiệu */
 #define RSSI_INITIAL_VALUE (-100)
@@ -87,6 +103,30 @@ static bool connected = false;
 /** @brief Cờ: Yêu cầu quét BLE */
 static bool doScan = false;
 
+/** @brief Cờ: Đang trong chế độ kết nối lại */
+static bool isReconnecting = false;
+
+/** @brief Mốc thời gian cho lần quét tiếp theo (mili giây) */
+static unsigned long nextScanTime = 0U;
+
+/** @brief Khoảng thời gian chờ giữa các lần quét (ms) */
+#define SCAN_RETRY_INTERVAL_MS (1000U)
+
+/* ========================================================================
+ * Biến Challenge-Response Authentication
+ * ======================================================================== */
+/** @brief Con trỉ đến challenge characteristic */
+static BLERemoteCharacteristic* pChallengeCharacteristic = nullptr;
+
+/** @brief Con trỏ đến auth characteristic */
+static BLERemoteCharacteristic* pAuthCharacteristic = nullptr;
+
+/** @brief Cờ: Tag đã được xác thực bởi Anchor */
+static bool authenticated = false;
+
+/** @brief Pairing key (16 bytes) */
+static uint8_t pairingKey[16];
+
 /* ========================================================================
  * Các Biến Giám Sát RSSI
  * ======================================================================== */
@@ -102,8 +142,17 @@ static bool rssiThresholdMet = false;
 /** @brief Mốc thời gian kiểm tra RSSI lần cuối tính bằng mili giây */
 static unsigned long lastRssiCheck = 0U;
 
-/** @brief Bộ đếm số lần liên tiếp ra khỏi ngưỡng khoảng cách */
-static int outOfRangeCounter = 0;
+/** @brief Bộ đếm số lần liên tiếp RSSI yếu (ra khỏi 20m) */
+static int rssiWeakCounter = 0;
+
+/** @brief Cờ: Anchor đã sẵn sàng UWB (nhận notification "UWB_ACTIVE") */
+static bool anchorUwbReady = false;
+
+/** @brief Mốc thời gian khi đạt ngưỡng RSSI (để timeout tự động) */
+static unsigned long rssiThresholdMetTime = 0U;
+
+/** @brief Timeout tự động giả định Anchor đã sẵn sàng (ms) */
+#define ANCHOR_READY_TIMEOUT_MS (3000U)
 
 /* ========================================================================
  * Cấu Hình Chân Phần Cứng UWB
@@ -121,7 +170,7 @@ static int outOfRangeCounter = 0;
  * Cấu Hình Đo Khoảng Cách UWB
  * ======================================================================== */
 /** @brief Độ trễ giữa các lần đo khoảng cách tính bằng mili giây */
-#define RNG_DELAY_MS (1000U)
+#define RNG_DELAY_MS (500U) /* Giảm tần suất đo để ổn định hơn */
 
 /** @brief Giá trị trễ ăng-ten phát (hiệu chuẩn theo thiết bị) */
 #define TX_ANT_DLY (16385U)
@@ -148,10 +197,10 @@ static int outOfRangeCounter = 0;
 #define RESP_MSG_TS_LEN (4U)
 
 /** @brief Độ trễ từ Poll TX đến Response RX tính bằng micro giây */
-#define POLL_TX_TO_RESP_RX_DLY_UUS (500U)
+#define POLL_TX_TO_RESP_RX_DLY_UUS (500U) /* Phải nhỏ hơn Anchor delay (800us) */
 
 /** @brief Thời gian timeout nhận phản hồi tính bằng micro giây */
-#define RESP_RX_TIMEOUT_UUS (2000U)
+#define RESP_RX_TIMEOUT_UUS (10000U) /* Đủ cho khoảng cách gần */
 
 /** @brief Kích thước buffer tin nhắn tính bằng byte */
 #define MSG_BUFFER_SIZE (20U)
@@ -215,6 +264,45 @@ void uwbInitiatorLoop(void);
 bool connectToServer(void);
 
 /* ========================================================================
+ * Helper Functions cho Challenge-Response Authentication
+ * ======================================================================== */
+
+/**
+ * @brief Chuyển đổi chuỗi hex thành mảng bytes
+ */
+void hexStringToBytes(const char* hexString, uint8_t* bytes, size_t length) {
+  for (size_t i = 0; i < length; i++) {
+    sscanf(hexString + 2*i, "%2hhx", &bytes[i]);
+  }
+}
+
+/**
+ * @brief Tính HMAC-SHA256
+ */
+bool computeHMAC(const uint8_t* key, size_t keyLen,
+                 const uint8_t* data, size_t dataLen,
+                 uint8_t* output) {
+  
+  const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  
+  int ret = mbedtls_md_hmac(md_info, key, keyLen, data, dataLen, output);
+  
+  return (ret == 0);
+}
+
+/**
+ * @brief In bytes dưới dạng hex
+ */
+void printHex(const char* label, const uint8_t* data, size_t length) {
+  Serial.print(label);
+  for (size_t i = 0; i < length; i++) {
+    if (data[i] < 16) Serial.print("0");
+    Serial.print(data[i], HEX);
+  }
+  Serial.println();
+}
+
+/* ========================================================================
  * Các Class Callback BLE
  * ======================================================================== */
 /**
@@ -244,6 +332,12 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
       Serial.print(rssi);
       Serial.println(" dBm");
       
+      /* Cleanup thiết bị cũ nếu có */
+      if (myDevice != nullptr) {
+        delete myDevice;
+        myDevice = nullptr;
+      }
+      
       /* Lưu thiết bị và kích hoạt kết nối */
       myDevice = new BLEAdvertisedDevice(advertisedDevice);
       doConnect = true;
@@ -263,16 +357,80 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
  * 
  * @return Không có
  * 
- * @note Hiển thị tin nhắn nhận được từ Anchor (ví dụ: "UWB_ACTIVE")
+ * @note Xử lý challenge từ Anchor, auth result và UWB_ACTIVE notification
  */
 static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic,
                            uint8_t* pData, size_t length, bool isNotify) {
-  (void)pBLERemoteCharacteristic; /* Tham số không sử dụng */
   (void)isNotify;                  /* Tham số không sử dụng */
   
-  if ((pData != nullptr) && (length > 0U)) {
-    Serial.print("Thong bao: ");
-    Serial.println((char*)pData);
+  if ((pData == nullptr) || (length == 0U)) {
+    return;
+  }
+  
+  String charUUID = pBLERemoteCharacteristic->getUUID().toString().c_str();
+  
+  // Xử lý Challenge nhận được
+  if (charUUID == CHALLENGE_CHAR_UUID) {
+    if (length == 16) {
+      Serial.println("\n==================================================");
+      Serial.println("🔐 Nhan Challenge tu Anchor!");
+      Serial.println("==================================================");
+      
+      printHex("Challenge: ", pData, 16);
+      
+      // Tính response: HMAC(key, challenge)
+      uint8_t response[32];
+      bool success = computeHMAC(pairingKey, 16, pData, 16, response);
+      
+      if (success) {
+        printHex("Response cua Tag: ", response, 32);
+        
+        Serial.println("\n📤 Dang gui response den Anchor...");
+        
+        // Gửi response
+        pAuthCharacteristic->writeValue(response, 32);
+        
+        Serial.println("✓ Response da gui!");
+        Serial.println("⏳ Dang cho ket qua xac thuc...\n");
+        
+      } else {
+        Serial.println("❌ Tinh HMAC that bai");
+      }
+    }
+  }
+  
+  // Xử lý Auth result
+  else if (charUUID == AUTH_CHAR_UUID) {
+    std::string value((char*)pData, length);
+    
+    Serial.println("==================================================");
+    if (value == "AUTH_OK") {
+      authenticated = true;
+      Serial.println("✅ XAC THUC THANH CONG!");
+      Serial.println("==================================================");
+      Serial.println("Tag duoc quyen truy cap xe");
+      Serial.println("Dang giam sat RSSI de kich hoat UWB...");
+    } else if (value == "AUTH_FAIL") {
+      authenticated = false;
+      Serial.println("❌ XAC THUC THAT BAI!");
+      Serial.println("==================================================");
+      Serial.println("Sai key - Truy cap bi tu choi");
+    }
+    Serial.println("==================================================\n");
+  }
+  
+  // Xử lý các notification khác (UWB_ACTIVE, etc)
+  else if (charUUID == CHARACTERISTIC_UUID) {
+    String message = String((char*)pData);
+    Serial.print("Thong bao tu Anchor: ");
+    Serial.println(message);
+    
+    /* Kiểm tra xem Anchor đã sẵn sàng UWB chưa */
+    if (message.indexOf("UWB_ACTIVE") >= 0) {
+      anchorUwbReady = true;
+      Serial.println(">>> ANCHOR DA SAN SANG UWB <<<");
+      Serial.println("Tag co the bat dau do khoang cach");
+    }
   }
 }
 
@@ -296,10 +454,14 @@ class MyClientCallback : public BLEClientCallbacks {
     (void)pclient; /* Tham số không sử dụng */
     
     connected = true;
+    authenticated = false; // Reset authentication status
+    isReconnecting = false; /* Tắt chế độ reconnect khi kết nối thành công */
     rssiStableCounter = 0;
     rssiThresholdMet = false;
+    rssiThresholdMetTime = 0U; /* Reset timeout */
+    anchorUwbReady = false; /* Reset cờ UWB ready */
     Serial.println("BLE: Da ket noi den Anchor!");
-    Serial.println("Dang giam sat RSSI de phat hien khoang cach...");
+    Serial.println("Đang cho ket qua xac thuc Challenge-Response...");
   }
 
   /**
@@ -314,17 +476,44 @@ class MyClientCallback : public BLEClientCallbacks {
   void onDisconnect(BLEClient* pclient) {
     (void)pclient; /* Tham số không sử dụng */
     
-    connected = false;
-    rssiStableCounter = 0;
-    rssiThresholdMet = false;
-    outOfRangeCounter = 0;
-    
+    Serial.println("\n========================================");
     Serial.println("BLE: Da ngat ket noi voi Anchor!");
+    Serial.println("Bat dau che do ket noi lai tu dong...");
+    Serial.println("========================================\n");
     
     /* Tắt UWB khi mất kết nối để tiết kiệm năng lượng */
-    deinitUWB();
+    if (uwbInitialized) {
+      /* Gửi thông báo UWB_STOP nếu có thể (có thể không gửi được do mất kết nối) */
+      Serial.println(">>> Dang tat UWB do mat ket noi...");
+      deinitUWB();
+    }
     
+    /* Reset trạng thái */
+    connected = false;
+    authenticated = false; // Reset authentication
+    rssiStableCounter = 0;
+    rssiThresholdMet = false;
+    rssiThresholdMetTime = 0U; /* Reset timeout */
+    rssiWeakCounter = 0;
+    anchorUwbReady = false; /* Reset cờ UWB ready */
+    
+    /* Cleanup BLE client để chuẩn bị reconnect */
+    if (pClient != nullptr) {
+      pClient->disconnect();
+    }
+    pRemoteCharacteristic = nullptr;
+    
+    /* Reset myDevice để scan lại từ đầu */
+    if (myDevice != nullptr) {
+      delete myDevice;
+      myDevice = nullptr;
+    }
+    
+    /* Kích hoạt chế độ kết nối lại liên tục */
+    isReconnecting = true;
     doScan = true;
+    doConnect = false;
+    nextScanTime = millis() + 500; /* Quét lại sau 500ms */
   }
 };
 
@@ -372,7 +561,12 @@ bool connectToServer(void) {
   }
   
   Serial.println("Da ket noi!");
-  delay(100);
+  
+  // Request MTU lớn hơn để gửi 32-byte HMAC
+  Serial.println("📡 Dang yeu cau MTU 517...");
+  pClient->setMTU(517); // 517 = 512 data + 5 byte header
+  delay(500); // Đợi MTU exchange
+  Serial.println("✓ MTU da duoc yeu cau");
   
   BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
   if (pRemoteService == nullptr) {
@@ -383,22 +577,123 @@ bool connectToServer(void) {
   
   Serial.println("Da tim thay Service");
   
-  pRemoteCharacteristic = pRemoteService->getCharacteristic(CHARACTERISTIC_UUID);
-  if (pRemoteCharacteristic == nullptr) {
-    Serial.println("Khong tim thay characteristic UUID");
+  // Lấy Challenge Characteristic
+  pChallengeCharacteristic = pRemoteService->getCharacteristic(CHALLENGE_CHAR_UUID);
+  if (pChallengeCharacteristic == nullptr) {
+    Serial.println("❌ Khong tim thay Challenge characteristic");
     pClient->disconnect();
     return false;
   }
+  Serial.println("✓ Tim thay Challenge characteristic");
   
-  Serial.println("Da tim thay Characteristic");
+  // Lấy Auth Characteristic
+  pAuthCharacteristic = pRemoteService->getCharacteristic(AUTH_CHAR_UUID);
+  if (pAuthCharacteristic == nullptr) {
+    Serial.println("❌ Khong tim thay Auth characteristic");
+    pClient->disconnect();
+    return false;
+  }
+  Serial.println("✓ Tim thay Auth characteristic");
   
-  /* Đăng ký nhận thông báo nếu được hỗ trợ */
+  // Lấy Data Exchange Characteristic
+  pRemoteCharacteristic = pRemoteService->getCharacteristic(CHARACTERISTIC_UUID);
+  if (pRemoteCharacteristic == nullptr) {
+    Serial.println("Khong tim thay Data characteristic");
+    pClient->disconnect();
+    return false;
+  }
+  Serial.println("✓ Tim thay Data characteristic");
+  
+  // Đăng ký notifications cho Challenge
+  Serial.println("\n📝 Dang dang ky notifications...");
+  if (pChallengeCharacteristic->canNotify()) {
+    pChallengeCharacteristic->registerForNotify(notifyCallback);
+    Serial.println("✓ Subscribe Challenge notifications");
+  }
+  
+  // Đăng ký notifications cho Auth
+  if (pAuthCharacteristic->canNotify()) {
+    pAuthCharacteristic->registerForNotify(notifyCallback);
+    Serial.println("✓ Subscribe Auth notifications");
+  }
+  
+  // Đăng ký notifications cho Data
   if (pRemoteCharacteristic->canNotify()) {
     pRemoteCharacteristic->registerForNotify(notifyCallback);
+    Serial.println("✓ Subscribe Data notifications");
+  }
+  
+  Serial.println("⏳ Cho 2 giay de nhan challenge...\n");
+  delay(2000);  // Chờ cho Anchor gửi challenge và notification được xử lý
+  
+  // Nếu chưa nhận được challenge qua notification, thử đọc trực tiếp
+  if (!authenticated) {
+    Serial.println("🔍 Chua nhan challenge qua notification, doc truc tiep...");
+    
+    // Đọc raw data - sử dụng constructor với length để xử lý binary data có byte 0x00
+    String tempChallenge = pChallengeCharacteristic->readValue();
+    std::string challengeValue(tempChallenge.c_str(), tempChallenge.length());
+    
+    if (challengeValue.length() == 16) {
+      Serial.println("\n==================================================");
+      Serial.println("🔐 Nhan Challenge tu Anchor (polling)!");
+      Serial.println("==================================================");
+      
+      printHex("Challenge: ", (uint8_t*)challengeValue.data(), 16);
+      
+      // Compute response: HMAC(key, challenge)
+      uint8_t response[32];
+      bool success = computeHMAC(pairingKey, 16, (uint8_t*)challengeValue.data(), 16, response);
+      
+      if (success) {
+        printHex("Response tinh duoc: ", response, 32);
+        
+        Serial.println("\n📤 Dang gui response den Anchor...");
+        
+        // Gửi response
+        pAuthCharacteristic->writeValue(response, 32);
+        
+        Serial.println("✓ Response da gui!");
+        Serial.println("⏳ Dang cho ket qua xac thuc...\n");
+        
+        delay(1000); // Đợi Anchor xử lý
+        
+        // Đọc kết quả authentication
+        String tempAuth = pAuthCharacteristic->readValue();
+        std::string authResult(tempAuth.c_str(), tempAuth.length());
+        
+        Serial.println("==================================================");
+        if (authResult == "AUTH_OK") {
+          authenticated = true;
+          Serial.println("✅ XAC THUC THANH CONG!");
+          Serial.println("==================================================");
+          Serial.println("Tag duoc quyen truy cap xe");
+          Serial.println("Dang giam sat RSSI de kich hoat UWB...");
+        } else if (authResult == "AUTH_FAIL") {
+          authenticated = false;
+          Serial.println("❌ XAC THUC THAT BAI!");
+          Serial.println("==================================================");
+          Serial.println("Sai key - Truy cap bi tu choi");
+          Serial.println("Dang ngat ket noi...");
+          pClient->disconnect();
+          return false;
+        } else {
+          Serial.println("⚠️ Chua nhan duoc ket qua authentication");
+        }
+        Serial.println("==================================================\n");
+        
+      } else {
+        Serial.println("❌ Tinh HMAC that bai!");
+        pClient->disconnect();
+        return false;
+      }
+    } else {
+      Serial.println("❌ Challenge khong hop le hoac chua san sang");
+      Serial.println("Do dai: " + String(challengeValue.length()) + " bytes (mong doi 16)");
+    }
   }
   
   connected = true;
-  Serial.println("Ket noi thanh cong!");
   return true;
 }
 
@@ -428,6 +723,11 @@ void checkRSSI(void) {
     return;
   }
   
+  /* CHỈ kiểm tra RSSI nếu đã được authenticated */
+  if (!authenticated) {
+    return;
+  }
+  
   currentRSSI = pClient->getRssi();
   
   Serial.print("RSSI: ");
@@ -447,14 +747,10 @@ void checkRSSI(void) {
     /* Kích hoạt UWB khi phát hiện khoảng cách gần ổn định */
     if ((rssiStableCounter >= RSSI_STABLE_COUNT_REQUIRED) && (!rssiThresholdMet)) {
       rssiThresholdMet = true;
+      rssiThresholdMetTime = millis(); /* Lưu thời điểm để timeout */
       Serial.println("\nRSSI on dinh va du manh!");
-      Serial.println("Thiet bi co ve < 4.5m");
-      Serial.println("Dang kich hoat UWB de xac minh khoang cach chinh xac...");
-      
-      /* Khởi tạo UWB để xác minh bảo mật */
-      if (!uwbInitialized) {
-        initUWB();
-      }
+      Serial.println("Thiet bi co ve < 20m");
+      Serial.println("Dang cho Anchor khoi tao UWB...");
     }
   } else {
     /* RSSI dưới ngưỡng - reset bộ đếm */
@@ -464,9 +760,65 @@ void checkRSSI(void) {
     Serial.println();
     rssiStableCounter = 0;
     
-    /* Cảnh báo nếu thiết bị đang di chuyển xa trong khi UWB hoạt động */
+    /* Nếu UWB đang hoạt động và RSSI yếu, đếm để tắt UWB */
     if (uwbInitialized && rssiThresholdMet) {
-      Serial.println("Tin hieu yeu di - thiet bi dang di chuyen xa");
+      rssiWeakCounter++;
+      Serial.print("RSSI yeu - thiet bi dang di chuyen xa (");
+      Serial.print(rssiWeakCounter);
+      Serial.print("/");
+      Serial.print(RSSI_WEAK_COUNT_TO_DISABLE_UWB);
+      Serial.println(")");
+      
+      /* Tắt UWB khi ra khỏi ngưỡng 20m liên tiếp */
+      if (rssiWeakCounter >= RSSI_WEAK_COUNT_TO_DISABLE_UWB) {
+        Serial.println("\n>>> RA KHOI 20M - TAT UWB <<<");
+        
+        /* Gửi thông báo cho Anchor tắt UWB */
+        if (connected && (pRemoteCharacteristic != nullptr)) {
+          pRemoteCharacteristic->writeValue("UWB_STOP", 8U);
+          Serial.println(">>> Da gui lenh UWB_STOP den Anchor");
+        }
+        
+        deinitUWB();
+        rssiThresholdMetTime = 0U; /* Reset timeout */
+        rssiWeakCounter = 0;
+        anchorUwbReady = false; /* Reset để đợi lại khi quay về */
+        rssiThresholdMet = false;
+        Serial.println("UWB se duoc kich hoat lai khi vao lai khoang cach 20m\n");
+      }
+    } else {
+      rssiWeakCounter = 0;
+    }
+  }
+  
+  /* Khởi tạo UWB CHỈ KHI: RSSI đạt ngưỡng VÀ Anchor đã sẵn sàng */
+  if (rssiThresholdMet && anchorUwbReady && (!uwbInitialized)) {
+    Serial.println("\n>>> CAC DIEU KIEN DA DAP UNG <<<");
+    Serial.println("1. RSSI: ON DINH (<20m)");
+    Serial.println("2. ANCHOR: UWB DA SAN SANG");
+    Serial.println("Dang khoi tao UWB de do khoang cach chinh xac...\n");
+    initUWB();
+  }
+  
+  /* POLLING & TIMEOUT: Đọc characteristic hoặc tự động ready sau timeout */
+  if (rssiThresholdMet && (!anchorUwbReady)) {
+    /* Kiểm tra timeout - tự động giả định Anchor đã sẵn sàng sau 3 giây */
+    if ((millis() - rssiThresholdMetTime) >= ANCHOR_READY_TIMEOUT_MS) {
+      anchorUwbReady = true;
+      Serial.println("\n>>> [TIMEOUT] TU DONG GIA DINH ANCHOR DA SAN SANG <<<");
+      Serial.println("(Khong nhan duoc notification sau 3 giay)");
+      Serial.println("Tag bat dau do khoang cach...\n");
+    }
+    /* Polling: Thử đọc characteristic nếu có kết nối */
+    else if (pRemoteCharacteristic != nullptr) {
+      String value = pRemoteCharacteristic->readValue().c_str();
+      if (value.length() > 0U) {
+        if (value.indexOf("UWB_ACTIVE") >= 0) {
+          anchorUwbReady = true;
+          Serial.println("\n>>> [POLLING] ANCHOR DA SAN SANG UWB <<<");
+          Serial.println("Tag co the bat dau do khoang cach\n");
+        }
+      }
     }
   }
 }
@@ -544,8 +896,15 @@ void initUWB(void) {
   dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
   
   uwbInitialized = true;
-  outOfRangeCounter = 0; /* Reset bộ đếm khi khởi tạo UWB */
   Serial.println("UWB: Da khoi tao va san sang do khoang cach!");
+  
+  /* Gửi thông báo cho Anchor để kích hoạt UWB ngay lập tức */
+  if (connected && (pRemoteCharacteristic != nullptr)) {
+    Serial.println(">>> Gui tin hieu TAG_UWB_READY den Anchor...");
+    pRemoteCharacteristic->writeValue("TAG_UWB_READY", 14U);
+    delay(500); /* Đợi Anchor khởi tạo UWB */
+    Serial.println(">>> Cho Anchor khoi tao UWB (500ms)...");
+  }
 }
 
 /**
@@ -567,8 +926,9 @@ void deinitUWB(void) {
     
     /* Reset các cờ và bộ đếm */
     uwbInitialized = false;
-    outOfRangeCounter = 0;
+    rssiWeakCounter = 0;
     rssiThresholdMet = false;
+    rssiThresholdMetTime = 0U;
     
     Serial.println("UWB: Da tat\n");
   }
@@ -586,12 +946,11 @@ void deinitUWB(void) {
  * 2. Đợi RESPONSE với các timestamp
  * 3. Tính Time-of-Flight sử dụng timestamp
  * 4. Chuyển đổi ToF sang khoảng cách
- * 5. Xác minh khoảng cách < 5m (phát hiện tấn công relay)
+ * 5. Kiểm tra khoảng cách:
+ *    - Nếu < 3m: Cho phép mở khóa xe
+ *    - Nếu > 3m: Cảnh báo và khóa xe, NHƯNG VẪN TIẾP TỤC ĐO
  * 6. Gửi kết quả về Anchor qua BLE
- * 
- * Bảo mật:
- * - Nếu khoảng cách > 5m: Cảnh báo tấn công relay
- * - Nếu khoảng cách < 5m: Xác nhận khoảng cách thật
+ * 7. UWB chỉ tắt khi RSSI yếu (ra khỏi 20m)
  * 
  * @note Gọi liên tục với RNG_DELAY_MS giữa các lần gọi
  */
@@ -659,13 +1018,10 @@ void uwbInitiatorLoop(void) {
         Serial.print(distance, 1);
         Serial.print(" m");
         
-        /* Kiểm tra bảo mật: Xác minh khoảng cách trong phạm vi hợp lệ */
-        if (distance <= UWB_DISTANCE_LIMIT_METERS) {
-          Serial.println(" DA XAC MINH - Khoang cach that");
-          Serial.println("An toan de mo khoa xe");
-          
-          /* Reset bộ đếm ra khỏi ngưỡng */
-          outOfRangeCounter = 0;
+        /* Kiểm tra khoảng cách để quyết định mở khóa xe */
+        if (distance <= UWB_UNLOCK_DISTANCE_METERS) {
+          Serial.println(" - TRONG VUNG AN TOAN");
+          Serial.println(">>> CHO PHEP MO KHOA XE <<<");
           
           /* Gửi khoảng cách đã xác minh đến Anchor qua BLE */
           if (connected && (pRemoteCharacteristic != nullptr)) {
@@ -674,27 +1030,17 @@ void uwbInitiatorLoop(void) {
             pRemoteCharacteristic->writeValue(distStr, strlen(distStr));
           }
         } else {
-          /* RA KHOI NGUONG - Đếm số lần liên tiếp */
-          outOfRangeCounter++;
+          /* Khoảng cách > 3m - CHỈ CẢNH BÁO, KHÔNG TẮT UWB */
+          Serial.println(" - VUOT NGUONG 3M");
+          Serial.println(">>> CANH BAO: KHOANG CACH XA, KHOA XE <<<");
+          Serial.println(">>> TIEP TUC DO KHOANG CACH... <<<");
           
-          Serial.print(" RA KHOI NGUONG (>");
-          Serial.print(UWB_DISTANCE_LIMIT_METERS, 1);
-          Serial.print("m) - Lan ");
-          Serial.print(outOfRangeCounter);
-          Serial.print("/");
-          Serial.println(OUT_OF_RANGE_COUNT_TO_DISABLE_UWB);
-          Serial.println(">>> YEU CAU KHOA XE <<<");
-          
-          /* Gửi lệnh khóa xe đến Anchor */
+          /* Gửi lệnh khóa xe nhưng VẪN TIẾP TỤC ĐO */
           if (connected && (pRemoteCharacteristic != nullptr)) {
+            char distStr[32];
+            (void)snprintf(distStr, sizeof(distStr), "WARNING:%.1fm", distance);
+            pRemoteCharacteristic->writeValue(distStr, strlen(distStr));
             pRemoteCharacteristic->writeValue("LOCK_CAR", 8U);
-          }
-          
-          /* Tắt UWB sau nhiều lần liên tiếp ra khỏi ngưỡng để tiết kiệm năng lượng */
-          if (outOfRangeCounter >= OUT_OF_RANGE_COUNT_TO_DISABLE_UWB) {
-            Serial.println("Thiet bi da ra khoi nguong lien tuc");
-            deinitUWB();
-            Serial.println("UWB se duoc kich hoat lai khi thiet bi quay ve gan xe (RSSI tot)");
           }
         }
       }
@@ -703,11 +1049,11 @@ void uwbInitiatorLoop(void) {
     /* Xóa các sự kiện lỗi/timeout RX */
     dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
     
-    /* Debug: In loại lỗi */
+    /* Debug: In loại lỗi với thông tin chi tiết */
     if ((status_reg & SYS_STATUS_ALL_RX_TO) != 0U) {
-      Serial.println("RX TIMEOUT");
+      Serial.println("Khong nhan duoc phan hoi - Khoang cach khong hop le (co the Anchor da tat UWB)");
     } else if ((status_reg & SYS_STATUS_ALL_RX_ERR) != 0U) {
-      Serial.println("RX LOI");
+      Serial.println("Loi nhan tin hieu UWB - Khoang cach khong hop le");
     } else {
       /* Không có lỗi - không nên đến đây */
     }
@@ -735,7 +1081,20 @@ void uwbInitiatorLoop(void) {
  */
 void setup(void) {
   Serial.begin(115200);
-  Serial.println("\n=== BLE+UWB Tag (Thiet Bi Nguoi Dung) Khoi Dong ===");
+  delay(1000);
+  
+  Serial.println("\n==================================================");
+  Serial.println("=== BLE+UWB Tag (Thiet Bi Nguoi Dung) Khoi Dong ===");
+  Serial.println("=== Voi Challenge-Response Authentication ===");
+  Serial.println("==================================================\n");
+  
+  /* Chọn key để test */
+  const char* keyToUse = useCorrectKey ? CORRECT_KEY_HEX : WRONG_KEY_HEX;
+  hexStringToBytes(keyToUse, pairingKey, 16);
+  
+  Serial.println("Test voi: " + String(useCorrectKey ? "CORRECT" : "WRONG") + " key");
+  printHex("Pairing Key: ", pairingKey, 16);
+  Serial.println("==================================================\n");
   
   /* Khởi tạo BLE stack */
   Serial.println("Dang khoi dong BLE Client...");
@@ -751,7 +1110,8 @@ void setup(void) {
   }
   
   Serial.println("BLE: Da khoi tao");
-  Serial.println("Dang quet tim Anchor...");
+  Serial.println("🔐 Challenge-Response Authentication Enabled");
+  Serial.println("Dang quet tim Anchor...\n");
   
   /* Bắt đầu quét ban đầu (5 giây, không liên tục) */
   if (pBLEScan != nullptr) {
@@ -780,24 +1140,48 @@ void loop(void) {
   if (doConnect) {
     if (connectToServer()) {
       Serial.println("Ket noi thanh cong!");
-      Serial.println("Chi kich hoat UWB khi RSSI cho thay khoang cach < 4.5m");
+      Serial.println("Chi kich hoat UWB khi RSSI cho thay khoang cach < 20m");
       /* Khởi tạo UWB bị hoãn cho đến khi kiểm tra RSSI xác nhận gần */
     } else {
-      Serial.println("Ket noi that bai, dang thu lai...");
-      delay(1000); /* Đợi trước khi thử lại */
+      Serial.println("Ket noi that bai!");
+      /* Tiếp tục quét lại sau 2 giây */
+      isReconnecting = true;
       doScan = true;
+      nextScanTime = millis() + SCAN_RETRY_INTERVAL_MS;
     }
     doConnect = false;
   }
   
-  /* Khởi động lại quét nếu ngắt kết nối */
-  if (doScan) {
-    Serial.println("Dang quet tim Anchor...");
-    BLEScan* pScan = BLEDevice::getScan();
-    if (pScan != nullptr) {
-      pScan->start(5, false);
+  /* Quét lại nếu ngắt kết nối hoặc chưa kết nối */
+  if (doScan && (!connected)) {
+    /* Kiểm tra đủ thời gian chờ giữa các lần quét */
+    if (millis() >= nextScanTime) {
+      if (isReconnecting) {
+        Serial.print("[Auto-Reconnect] Dang quet tim Anchor");
+      } else {
+        Serial.print("Dang quet tim Anchor");
+      }
+      Serial.println(" (3 giay)...");
+      
+      BLEScan* pScan = BLEDevice::getScan();
+      if (pScan != nullptr) {
+        pScan->start(3, false); /* Quét 3 giây - BLOCKING call */
+      }
+      
+      Serial.println("Scan hoan tat.");
+      
+      /* Nếu không tìm thấy, lên lịch quét lại sau 1 giây */
+      if (!connected && !doConnect) {
+        nextScanTime = millis() + SCAN_RETRY_INTERVAL_MS;
+        if (isReconnecting) {
+          Serial.println("[Auto-Reconnect] Khong tim thay, thu lai sau 1 giay...");
+        } else {
+          Serial.println("Khong tim thay Anchor, se thu lai sau 1 giay...");
+        }
+      } else if (doConnect) {
+        Serial.println("Da tim thay Anchor! Dang xu ly ket noi...");
+      }
     }
-    doScan = false;
   }
   
   /* Kiểm tra RSSI định kỳ khi đã kết nối */

@@ -144,6 +144,8 @@ void loop() {
 
         /* Start transmission, indicating that a response is expected so that reception is enabled automatically after the frame is sent and the delay
          * set by dwt_setrxaftertxdelay() has elapsed. */
+        Serial.print("TX Poll #");
+        Serial.println(frame_seq_nb);
         dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
 
         /* We assume that the transmission is achieved correctly, poll for reception of a frame or error/timeout. See NOTE 8 below. */
@@ -196,13 +198,33 @@ void loop() {
                     /* Display computed distance on LCD. */
                     snprintf(dist_str, sizeof(dist_str), "DIST: %3.2f m", distance);
                     test_run_info((unsigned char *)dist_str);
+                    
+                    Serial.print(">>> DISTANCE: ");
+                    Serial.print(distance);
+                    Serial.println(" m");
                 }
+                else
+                {
+                    Serial.println("-> Frame format mismatch!");
+                }
+            }
+            else
+            {
+                Serial.println("-> Frame too large!");
             }
         }
         else
         {
             /* Clear RX error/timeout events in the DW IC status register. */
             dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+            
+            // Debug: print error type
+            if (status_reg & SYS_STATUS_ALL_RX_TO) {
+                Serial.println("-> RX TIMEOUT - No response from responder!");
+            }
+            else if (status_reg & SYS_STATUS_ALL_RX_ERR) {
+                Serial.println("-> RX ERROR");
+            }
         }
 
         /* Execute a delay between ranging exchanges. */

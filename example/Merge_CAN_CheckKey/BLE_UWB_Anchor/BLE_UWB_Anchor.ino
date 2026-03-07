@@ -72,6 +72,21 @@ static unsigned long connectionTime = 0U;
 static bool uwbActivationRequested = false;
 
 /* ========================================================================
+ * Các Biến Quản Lý Key Xác Thực
+ * ======================================================================== */
+/** @brief Key xác thực đã được lưu (32 ký tự hex) */
+static String storedKey = "";
+
+/** @brief Cờ: Hệ thống đã có key được lưu */
+static bool hasStoredKey = false;
+
+/** @brief Cờ: Key từ Tag đã được xác thực thành công */
+static bool keyAuthenticated = false;
+
+/** @brief Key nhận được từ Tag để xác thực */
+static String receivedKey = "";
+
+/* ========================================================================
  * Cấu Hình CAN Bus
  * ======================================================================== */
 /** @brief Chân CS cho MCP2515 CAN controller */
@@ -195,6 +210,55 @@ void resp_msg_set_ts(uint8_t *ts_field, uint64_t ts);
 void initUWB(void);
 void deinitUWB(void);
 void uwbResponderLoop(void);
+void requestKeyPairing(void);
+void sendSMSAlert(const char* msg);
+
+/* ========================================================================
+ * Các Hàm Xác Thực Key
+ * ======================================================================== */
+/**
+ * @brief Gửi yêu cầu ghép nối key mới đến Tag
+ * 
+ * @param Không có
+ * 
+ * @return Không có
+ * 
+ * @note Hàm này sẽ được gọi khi hệ thống chưa có key được lưu
+ *       Hiện tại chỉ in thông báo ra terminal (TH1)
+ */
+void requestKeyPairing(void) {
+  Serial.println("\n========================================");
+  Serial.println("   TH1: CHUA CO KEY - YEU CAU PAIRING");
+  Serial.println("========================================");
+  Serial.println("He thong chua co key xac thuc.");
+  Serial.println("Dang gui yeu cau tao key moi den Tag...");
+  Serial.println("[TODO] Giao thuc tao key se duoc trien khai sau");
+  Serial.println("========================================\n");
+  
+  /* Gửi thông báo đến Tag qua BLE */
+  if (pCharacteristic != nullptr) {
+    pCharacteristic->setValue("REQUEST_PAIRING");
+    pCharacteristic->notify();
+  }
+}
+
+/**
+ * @brief Gửi cảnh báo qua SMS
+ * 
+ * @param[in] msg Nội dung tin nhắn cảnh báo
+ * 
+ * @return Không có
+ * 
+ * @note Hàm này sẽ được gọi khi phát hiện key sai hoặc UWB sai
+ *       Hiện tại chỉ in thông báo ra terminal (TH3, TH4)
+ */
+void sendSMSAlert(const char* msg) {
+  Serial.println("\n*** CANH BAO BAO MAT - GUI SMS ***");
+  Serial.print("Noi dung: ");
+  Serial.println(msg);
+  Serial.println("[TODO] Module SMS se duoc trien khai sau");
+  Serial.println("***********************************\n");
+}
 
 /* ========================================================================
  * Các Class Callback BLE
@@ -204,7 +268,7 @@ void uwbResponderLoop(void);
  * @brief Bộ xử lý callback cho các thao tác ghi BLE characteristic
  * 
  * @details Xử lý tin nhắn nhận được từ thiết bị Tag qua BLE.
- *          Xử lý kết quả xác minh khoảng cách và cảnh báo bảo mật.
+ *          Xử lý xác thực key, kết quả xác minh khoảng cách và cảnh báo bảo mật.
  */
 class CharacteristicCallbacks : public BLECharacteristicCallbacks {
   /**
@@ -215,6 +279,7 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks {
    * @return Không có
    * 
    * @note Xử lý:
+   * - "KEY:" - Xác thực key từ Tag
    * - "VERIFIED:" - Khoảng cách đã xác thực, an toàn để mở khóa
    * - "ALERT:RELAY_ATTACK" - Phát hiện mối đe dọa bảo mật
    */
@@ -228,11 +293,72 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks {
       Serial.print("Nhan tu Tag: ");
       Serial.println(value.c_str());
       
-      /* Kiểm tra xác nhận khoảng cách đã xác minh */
-      if (value.startsWith("VERIFIED:")) {
-        Serial.println("Khoang cach da xac minh boi Tag - An toan de mo khoa");
+      /* ===== XỬ LÝ XÁC THỰC KEY ===== */
+      if (value.startsWith("KEY:")) {
+        receivedKey = value.substring(4); // Lấy key sau "KEY:"
         
-        /* Kích hoạt cơ chế mở khóa xe */
+        /* TH1: Chưa có key - yêu cầu pairing */
+        if (!hasStoredKey) {
+          requestKeyPairing();
+          return;
+        }
+        
+        /* TH2 & TH3: Có key - kiểm tra key */
+        if (receivedKey == storedKey) {
+          /* TH2: Key đúng */
+          Serial.println("\n========================================");
+          Serial.println("   TH2: KEY DUNG - XAC THUC THANH CONG");
+          Serial.println("========================================");
+          Serial.println("Key xac thuc thanh cong!");
+          Serial.println("Cho phep bat dau init UWB...");
+          Serial.println("========================================\n");
+          
+          keyAuthenticated = true;
+          
+          /* Thông báo cho Tag rằng key hợp lệ */
+          if (pCharacteristic != nullptr) {
+            pCharacteristic->setValue("KEY_VALID");
+            pCharacteristic->notify();
+          }
+        } else {
+          /* TH3: Key sai */
+          Serial.println("\n========================================");
+          Serial.println("   TH3: KEY SAI - XAC THUC THAT BAI");
+          Serial.println("========================================");
+          Serial.println("!!! CANH BAO: Key khong hop le !!!");
+          Serial.print("Key nhan duoc: ");
+          Serial.println(receivedKey.c_str());
+          Serial.print("Key luu tru:   ");
+          Serial.println(storedKey.c_str());
+          Serial.println("========================================\n");
+          
+          keyAuthenticated = false;
+          
+          /* Gửi cảnh báo qua SMS */
+          sendSMSAlert("CANH BAO: Co nguoi dang thu truy cap voi key sai!");
+          
+          /* Thông báo cho Tag rằng key không hợp lệ */
+          if (pCharacteristic != nullptr) {
+            pCharacteristic->setValue("KEY_INVALID");
+            pCharacteristic->notify();
+          }
+          
+          /* Ngắt kết nối để bảo mật */
+          Serial.println("Ngat ket noi BLE vi ly do bao mat...");
+          delay(500);
+        }
+      }
+      /* ===== XỬ LÝ KẾT QUẢ XÁC MINH KHOẢNG CÁCH UWB ===== */
+      else if (value.startsWith("VERIFIED:")) {
+        /* Chỉ xử lý nếu key đã được xác thực */
+        if (!keyAuthenticated) {
+          Serial.println("Canh bao: Nhan VERIFIED nhung key chua xac thuc!");
+          return;
+        }
+        
+        Serial.println("\nKhoang cach da xac minh boi Tag - An toan de mo khoa");
+        
+        /* TH2: Key đúng + UWB đúng -> Mở khóa xe */
         if (pCanControl != nullptr && !carUnlocked) {
           Serial.println("\n>>> DANG MO KHOA XE <<<");
           if (pCanControl->unlockCar()) {
@@ -260,13 +386,22 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks {
         
         /* Tắt UWB khi Tag ra khỏi ngưỡng để tiết kiệm năng lượng */
         deinitUWB();
+        keyAuthenticated = false; // Reset trạng thái xác thực
         Serial.println("UWB da tat - Se kich hoat lai khi Tag quay ve gan");
       }
-      /* Kiểm tra cảnh báo bảo mật */
+      /* TH4: Key đúng nhưng UWB phát hiện khoảng cách sai */
       else if (value.startsWith("ALERT:RELAY_ATTACK")) {
-        Serial.println("CANH BAO BAO MAT: Phat hien tan cong relay!");
+        Serial.println("\n========================================");
+        Serial.println("   TH4: KEY DUNG - UWB PHAT HIEN SAI");
+        Serial.println("========================================");
+        Serial.println("!!! CANH BAO BAO MAT: Phat hien tan cong relay !!!");
+        Serial.println("Key hop le nhung khoang cach UWB vuot nguong");
+        Serial.println("Co the co nguoi dang su dung relay attack");
         Serial.println("Xe giu nguyen khoa");
-        /* TODO: Ghi lại sự kiện bảo mật, có thể kích hoạt báo động */
+        Serial.println("========================================\n");
+        
+        /* Gửi cảnh báo qua SMS */
+        sendSMSAlert("CANH BAO: Phat hien tan cong relay! Key hop le nhung khoang cach UWB sai.");
       } else {
         /* Tin nhắn không xác định - bỏ qua */
       }
@@ -296,8 +431,11 @@ class MyServerCallbacks : public BLEServerCallbacks {
     deviceConnected = true;
     connectionTime = millis();
     uwbActivationRequested = false;
+    keyAuthenticated = false; // Reset trạng thái xác thực key
+    receivedKey = ""; // Xóa key nhận được trước đó
+    
     Serial.println("BLE: Tag da ket noi!");
-    Serial.println("Dang cho Tag xac minh RSSI truoc khi kich hoat UWB...");
+    Serial.println("Dang cho Tag gui key de xac thuc...");
     delay(100); /* Định thời gian cho kết nối ổn định */
   };
 
@@ -315,6 +453,8 @@ class MyServerCallbacks : public BLEServerCallbacks {
     
     deviceConnected = false;
     uwbActivationRequested = false;
+    keyAuthenticated = false; // Reset trạng thái xác thực
+    receivedKey = ""; // Xóa key nhận được
     
     /* Khóa xe khi Tag ngắt kết nối (ra khỏi khoảng cách) */
     if (pCanControl != nullptr && carUnlocked) {
@@ -548,6 +688,23 @@ void setup(void) {
   delay(1000);
   Serial.println("\n=== BLE+UWB Anchor (Xe) Khoi Dong ===");
   
+  /* Khởi tạo hệ thống Key - Giả lập có key đã lưu */
+  Serial.println("\n--- Khoi tao He Thong Key ---");
+  /* TODO: Load key từ EEPROM/Flash thực tế */
+  storedKey = "ABCD1234EFGH5678IJKL9012MNOP3456"; // Key mẫu 32 ký tự
+  hasStoredKey = true; // Đặt true để test TH2, TH3, TH4. Đặt false để test TH1
+  
+  if (hasStoredKey) {
+    Serial.println("Da phat hien key luu tru trong he thong");
+    Serial.print("Stored Key: ");
+    Serial.println(storedKey.c_str());
+    Serial.println("San sang xac thuc key tu Tag...");
+  } else {
+    Serial.println("Chua co key luu tru");
+    Serial.println("He thong se yeu cau pairing khi Tag ket noi");
+  }
+  Serial.println("--- Ket thuc khoi tao Key ---\n");
+  
   /* Khởi tạo CAN Bus System */
   Serial.println("\n--- Khoi tao CAN Bus ---");
   pCanControl = new CANCommands(&mcp2515);
@@ -626,14 +783,14 @@ void loop(void) {
     prevConnected = true;
   }
   
-  /* Kích hoạt UWB có trễ - chỉ sau khi Tag xác minh RSSI */
-  if (deviceConnected && (!uwbActivationRequested) && 
+  /* Kích hoạt UWB có trễ - CHỈ sau khi Tag xác thực key thành công */
+  if (deviceConnected && keyAuthenticated && (!uwbActivationRequested) && 
       ((millis() - connectionTime) > UWB_ACTIVATION_DELAY_MS)) {
     uwbActivationRequested = true;
     
-    /* Đánh thức UWB - Tag nên đã xác minh RSSI bây giờ */
+    /* Đánh thức UWB - Key đã xác thực và Tag nên đã xác minh RSSI */
     if (!uwbInitialized) {
-      Serial.println("Hoan thanh giai doan xac minh RSSI cua Tag");
+      Serial.println("Key da xac thuc va hoan thanh giai doan xac minh RSSI cua Tag");
       Serial.println("Dang kich hoat UWB de xac thuc khoang cach...");
       initUWB();
       
@@ -653,8 +810,8 @@ void loop(void) {
     BLEDevice::startAdvertising();
   }
   
-  /* Chạy đo khoảng cách UWB nếu đã kết nối và đã khởi tạo */
-  if (deviceConnected && uwbInitialized) {
+  /* Chạy đo khoảng cách UWB CHỈ nếu đã kết nối, key đã xác thực và đã khởi tạo */
+  if (deviceConnected && keyAuthenticated && uwbInitialized) {
     uwbResponderLoop();
   }
   
