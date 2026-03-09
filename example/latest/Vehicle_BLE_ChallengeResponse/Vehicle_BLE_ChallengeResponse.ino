@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <BLEDevice.h>
@@ -19,7 +20,15 @@
 // ============================================
 const char* ssid = "nubia Neo 2";
 const char* password = "29092004";
-const char* serverBaseUrl = "http://10.186.199.63:8000";
+
+// Để dùng server qua internet (Cloudflare Tunnel / ngrok / VPS):
+//   - Cloudflare Tunnel: "https://smart-car-server.xxx.cfargotunnel.com"
+//   - ngrok:             "https://abc123.ngrok-free.app"
+//   - VPS:               "https://your-server-ip-or-domain.com"
+// Để dùng server local (cùng WiFi):
+//   - "http://10.186.199.63:8000"
+const char* serverBaseUrl = "https://smart-car-server.xxx.cfargotunnel.com";
+
 const char* vehicleId = "1HGBH41JXMN109186";
 
 // ============================================
@@ -246,7 +255,18 @@ String fetchKeyFromServer() {
   // Send request
   HTTPClient http;
   String url = String(serverBaseUrl) + "/secure-check-pairing";
-  http.begin(url);
+
+  // Hỗ trợ cả HTTP (local) và HTTPS (internet qua tunnel/VPS)
+  WiFiClientSecure *secureClient = nullptr;
+  if (url.startsWith("https://")) {
+    secureClient = new WiFiClientSecure();
+    // Bỏ qua xác thực certificate (OK cho dev/test với Cloudflare/ngrok)
+    // Khi production với domain thật nên dùng setCACert()
+    secureClient->setInsecure();
+    http.begin(*secureClient, url);
+  } else {
+    http.begin(url);
+  }
   http.addHeader("Content-Type", "application/json");
   
   StaticJsonDocument<512> requestDoc;
@@ -281,6 +301,10 @@ String fetchKeyFromServer() {
   }
   
   http.end();
+  if (secureClient != nullptr) {
+    delete secureClient;
+    secureClient = nullptr;
+  }
   mbedtls_pk_free(&client_key);
   
   return key;
