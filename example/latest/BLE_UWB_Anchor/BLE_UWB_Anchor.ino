@@ -31,6 +31,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <ESPmDNS.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
@@ -72,8 +73,8 @@ const char* ssid = "nubia Neo 2";
 /** @brief WiFi password */
 const char* password = "29092004";
 
-/** @brief Server base URL */
-const char* serverBaseUrl = "http://10.96.74.63:8000";
+/** @brief Server base URL - tự động cập nhật qua mDNS sau khi WiFi kết nối */
+String serverBaseUrl = "http://10.96.74.63:8000";
 
 /** @brief Vehicle ID */
 const char* vehicleId = "1HGBH41JXMN109186";
@@ -449,6 +450,27 @@ void connectWiFi() {
   } else {
     Serial.println("\n❌ WiFi connection failed!\n");
   }
+}
+
+void discoverServer() {
+  Serial.println("Discovering server via mDNS...");
+
+  if (!MDNS.begin("esp32-anchor")) {
+    Serial.println("mDNS init failed, using fallback: " + serverBaseUrl);
+    return;
+  }
+
+  int n = MDNS.queryService("http", "tcp");
+  if (n > 0) {
+    for (int i = 0; i < n; i++) {
+      if (MDNS.port(i) == 8000) {
+        serverBaseUrl = "http://" + MDNS.address(i).toString() + ":8000";
+        Serial.println("✓ Server found via mDNS: " + serverBaseUrl);
+        return;
+      }
+    }
+  }
+  Serial.println("Server not found via mDNS, using fallback: " + serverBaseUrl);
 }
 
 /**
@@ -1419,6 +1441,10 @@ void setup(void) {
   
   /* Connect to WiFi */
   connectWiFi();
+
+  /* Tự động tìm server qua mDNS */
+  discoverServer();
+  Serial.println("Server URL: " + serverBaseUrl);
   
   /* Execute main flow: Check key or fetch from server, then start BLE */
   executeMainFlow();

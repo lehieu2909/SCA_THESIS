@@ -1,28 +1,44 @@
 <?xml version='1.0' encoding='UTF-8' standalone='yes'?>
 <WORKSPACE>
- <FRAME activewindow="1">
-  <PLACEMENT>2c0000000200000003000000ffffffffffffffffffffffffffffffff720100000000000080070000e4030000</PLACEMENT>
-  <WINDOW type="default" module="STARTUP"/>
+ <FRAME activewindow="0">
+  <PLACEMENT>2c00000002000000030000000083ffff0083ffffffffffffffffffff720100000000000080070000e4030000</PLACEMENT>
   <WINDOW type="default" module="ISIS">
-   <editor metric="0" gridmajor="2540000" mode="00000000" zoom="0" scale="208" flipped="0" gridminor="101600" gridmode="32" snapidx="0" snap="25400" xcursor="16" orgmode="0" snaprange="61057">
+   <editor metric="0" gridmajor="25400000" mode="00000000" zoom="0" scale="32" flipped="0" gridminor="1016000" gridmode="32" snapidx="0" snap="25400" xcursor="16" orgmode="0" snaprange="396875">
     <world y1="-8890000" x1="-12700000" y2="8890000" x2="12700000"/>
-    <centre x="7874000" y="5207000"/>
+    <centre x="-1422400" y="-8443978"/>
     <origin x="0" y="0"/>
    </editor>
   </WINDOW>
-  <WINDOW type="device" module="LIBMAN"/>
+  <WINDOW type="default" module="ARES">
+   <editor metric="1" gridmajor="10000000" mode="00000001" zoom="-1" scale="190" flipped="0" gridminor="400000" gridmode="32" snapidx="0" snap="10000" xcursor="0" orgmode="0" snaprange="66842">
+    <world y1="-12700000" x1="-15240000" y2="12700000" x2="15240000"/>
+    <centre x="-2330000" y="3650000"/>
+    <origin x="0" y="0"/>
+   </editor>
+  </WINDOW>
+  <WINDOW type="default" module="VSMSTUDIO">
+   <STATE NAME="EDIT" VALUE="AAAA/wAAAAH9AAAAAgAAAAAAAAEAAAACg/wCAAAAAvsAAAAQAFAAcgBvAGoAZQBjAHQAcwEAAAAAAAACgwAAASwA////+wAAABQAUAByAG8AcABlAHIAdABpAGUAcwAAAAAA/////wAAAHoA////AAAAAwAAB3gAAACd/AEAAAAB/AAAAAAAAAd4AAAAXwD////6AAAAAAEAAAAC+wAAACAATwB1AHQAcAB1AHQARABvAGMAawBXAGkAZABnAGUAdAEAAAAA/////wAAAF8A////+wAAACIAQgByAGUAYQBrAHAAbwBpAG4AdABzAFcAaQBuAGQAbwB3AAAAAAD/////AAAAXwD///8AAAZvAAACgwAAAAEAAAACAAAACAAAAAL8AAAAAA=="/>
+   <EDITOR/>
+  </WINDOW>
+  <WINDOW type="VIEW3D" module="VIEW3D">
+   <camera>
+    <position x="-9378471" y="4750877" z="6550637"/>
+    <focus x="-10402253" y="4229196" z="-5687"/>
+    <up x="-85653" y="994158" z="-65729"/>
+   </camera>
+  </WINDOW>
  </FRAME>
  <MODULE name="ARES">
-  <editor metric="1" gridmajor="0" mode="00000000" zoom="10" scale="10" flipped="0" gridminor="0" gridmode="32" snapidx="0" snap="0" xcursor="0" orgmode="0" snaprange="0">
+  <editor metric="1" gridmajor="10000000" mode="00000001" zoom="-1" scale="190" flipped="0" gridminor="400000" gridmode="32" snapidx="0" snap="10000" xcursor="0" orgmode="0" snaprange="66842">
    <world y1="-12700000" x1="-15240000" y2="12700000" x2="15240000"/>
-   <centre x="0" y="0"/>
+   <centre x="-2330000" y="3650000"/>
    <origin x="0" y="0"/>
   </editor>
  </MODULE>
  <MODULE name="ISIS">
-  <editor metric="0" gridmajor="2540000" mode="00000000" zoom="0" scale="208" flipped="0" gridminor="101600" gridmode="32" snapidx="0" snap="25400" xcursor="16" orgmode="0" snaprange="61057">
+  <editor metric="0" gridmajor="25400000" mode="00000000" zoom="0" scale="32" flipped="0" gridminor="1016000" gridmode="32" snapidx="0" snap="25400" xcursor="16" orgmode="0" snaprange="396875">
    <world y1="-8890000" x1="-12700000" y2="8890000" x2="12700000"/>
-   <centre x="7874000" y="5207000"/>
+   <centre x="-1422400" y="-8443978"/>
    <origin x="0" y="0"/>
   </editor>
  </MODULE>

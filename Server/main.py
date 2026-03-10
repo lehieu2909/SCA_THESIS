@@ -8,10 +8,62 @@ import base64
 import os
 import secrets
 import sqlite3
+import socket
 from datetime import datetime
 from typing import Optional
+from contextlib import asynccontextmanager
+from zeroconf import ServiceInfo, Zeroconf
 
-app = FastAPI(title="Smart Car Access Server")
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    init_db()
+    print("\n" + "=" * 50)
+    print("Smart Car Access Server Started")
+    print("=" * 50)
+    print("Database: car_access.db (SQLite)")
+    print("Pairing keys are now stored persistently!")
+    print("\nAvailable Endpoints:")
+    print("  POST /secure-check-pairing (ENCRYPTED)")
+    print("  GET  /check-pairing/{vehicle_id} (PLAIN)")
+    print("  POST /owner-pairing")
+    print("  GET  /vehicle/{vehicle_id}")
+    print("  GET  /vehicles")
+    print("  DELETE /vehicle/{vehicle_id}")
+    print("=" * 50)
+
+    # Đăng ký mDNS để ESP32 tự tìm thấy server
+    local_ip = get_local_ip()
+    zeroconf = Zeroconf()
+    mdns_info = ServiceInfo(
+        "_http._tcp.local.",
+        "smartcar._http._tcp.local.",
+        addresses=[socket.inet_aton(local_ip)],
+        port=8000,
+        properties={"service": "smartcar"},
+    )
+    zeroconf.register_service(mdns_info)
+    print(f"✓ mDNS registered: smartcar._http._tcp.local → {local_ip}:8000")
+    print("=" * 50 + "\n")
+
+    yield  # Server đang chạy
+
+    # Shutdown
+    zeroconf.unregister_service(mdns_info)
+    zeroconf.close()
+
+
+app = FastAPI(title="Smart Car Access Server", lifespan=lifespan)
 
 
 # Database initialization
@@ -317,20 +369,3 @@ def root():
     }
 
 
-# Initialize database on startup
-@app.on_event("startup")
-async def startup_event():
-    init_db()
-    print("\n" + "=" * 50)
-    print("Smart Car Access Server Started")
-    print("=" * 50)
-    print("Database: car_access.db (SQLite)")
-    print("Pairing keys are now stored persistently!")
-    print("\nAvailable Endpoints:")
-    print("  POST /secure-check-pairing (ENCRYPTED)")
-    print("  GET  /check-pairing/{vehicle_id} (PLAIN)")
-    print("  POST /owner-pairing")
-    print("  GET  /vehicle/{vehicle_id}")
-    print("  GET  /vehicles")
-    print("  DELETE /vehicle/{vehicle_id}")
-    print("=" * 50 + "\n")

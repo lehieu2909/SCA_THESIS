@@ -1,6 +1,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
+#include <ESPmDNS.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <BLEDevice.h>
@@ -21,13 +21,9 @@
 const char* ssid = "nubia Neo 2";
 const char* password = "29092004";
 
-// Để dùng server qua internet (Cloudflare Tunnel / ngrok / VPS):
-//   - Cloudflare Tunnel: "https://smart-car-server.xxx.cfargotunnel.com"
-//   - ngrok:             "https://abc123.ngrok-free.app"
-//   - VPS:               "https://your-server-ip-or-domain.com"
-// Để dùng server local (cùng WiFi):
-//   - "http://10.186.199.63:8000"
-const char* serverBaseUrl = "https://smart-car-server.xxx.cfargotunnel.com";
+// serverBaseUrl tự động cập nhật qua mDNS sau khi WiFi kết nối
+// Fallback nếu mDNS không tìm thấy server
+String serverBaseUrl = "http://192.168.43.100:8000";
 
 const char* vehicleId = "1HGBH41JXMN109186";
 
@@ -201,6 +197,27 @@ void connectWiFi() {
   }
 }
 
+void discoverServer() {
+  Serial.println("Discovering server via mDNS...");
+
+  if (!MDNS.begin("esp32-vehicle")) {
+    Serial.println("mDNS init failed, using fallback: " + serverBaseUrl);
+    return;
+  }
+
+  int n = MDNS.queryService("http", "tcp");
+  if (n > 0) {
+    for (int i = 0; i < n; i++) {
+      if (MDNS.port(i) == 8000) {
+        serverBaseUrl = "http://" + MDNS.address(i).toString() + ":8000";
+        Serial.println("✓ Server found via mDNS: " + serverBaseUrl);
+        return;
+      }
+    }
+  }
+  Serial.println("Server not found via mDNS, using fallback: " + serverBaseUrl);
+}
+
 String fetchKeyFromServer() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("❌ WiFi not connected!");
@@ -255,18 +272,7 @@ String fetchKeyFromServer() {
   // Send request
   HTTPClient http;
   String url = String(serverBaseUrl) + "/secure-check-pairing";
-
-  // Hỗ trợ cả HTTP (local) và HTTPS (internet qua tunnel/VPS)
-  WiFiClientSecure *secureClient = nullptr;
-  if (url.startsWith("https://")) {
-    secureClient = new WiFiClientSecure();
-    // Bỏ qua xác thực certificate (OK cho dev/test với Cloudflare/ngrok)
-    // Khi production với domain thật nên dùng setCACert()
-    secureClient->setInsecure();
-    http.begin(*secureClient, url);
-  } else {
-    http.begin(url);
-  }
+  http.begin(url);
   http.addHeader("Content-Type", "application/json");
   
   StaticJsonDocument<512> requestDoc;
@@ -301,10 +307,6 @@ String fetchKeyFromServer() {
   }
   
   http.end();
-  if (secureClient != nullptr) {
-    delete secureClient;
-    secureClient = nullptr;
-  }
   mbedtls_pk_free(&client_key);
   
   return key;
@@ -710,6 +712,10 @@ void setup() {
   
   // Connect to WiFi
   connectWiFi();
+
+  // Tự động tìm server qua mDNS
+  discoverServer();
+  Serial.println("Server URL: " + serverBaseUrl);
   
   // Execute main flow
   executeMainFlow();

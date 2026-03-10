@@ -1,0 +1,304 @@
+(PCB TAG
+ (parser
+  (host_cad ARES)
+  (host_version 8.16 SP3)
+ )
+ (resolution mm 100000)
+ (unit mm)
+ (structure
+  (boundary (rect pcb -120.45400 37.20504 -98.34600 77.05400))
+  (flip_style mirror_first)
+  (layer TOP (type signal) (direction horizontal))
+  (layer I1 (type signal) (direction off))
+  (layer I2 (type signal) (direction off))
+  (layer I3 (type signal) (direction off))
+  (layer I4 (type signal) (direction off))
+  (layer I5 (type signal) (direction off))
+  (layer I6 (type signal) (direction off))
+  (layer I7 (type signal) (direction off))
+  (layer I8 (type signal) (direction off))
+  (layer I9 (type signal) (direction off))
+  (layer I10 (type signal) (direction off))
+  (layer I11 (type signal) (direction off))
+  (layer I12 (type signal) (direction off))
+  (layer I13 (type signal) (direction off))
+  (layer I14 (type signal) (direction off))
+  (layer BOT (type signal) (direction vertical))
+  (grid via  0.63500)
+  (grid wire 0.63500)
+  (control
+   (via_at_smd off)
+   (off_grid on)
+  )
+  (via
+   $VIA#0_SIGNAL
+   (spare
+    $VIA#0_POWER
+   )
+  )
+  (rule
+   (width 0.25400)
+   (clearance 0.38100)
+   (clearance 0.25400 (type wire_via))
+   (clearance 0.25400 (type wire_smd))
+   (clearance 0.25400 (type wire_pin))
+   (clearance 0.25400 (type wire_wire))
+   (clearance 0.25400 (type via_pin))
+   (clearance 0.25400 (type via_via))
+   (clearance 0.25400 (type via_smd))
+  )
+ )
+ (placement
+  (component "ESP32-S3-SUPERMINI_ESP32 - S3 MINI" (place "ESP32 - S3 MINI" -117.80000 73.00000 front 0
+  ))
+  (component XCVR_DWM3000TR13_DWM3000 (place DWM3000 -103.32000 50.80000 back 0))
+ )
+ (library
+  (image "ESP32-S3-SUPERMINI_ESP32 - S3 MINI" (side front)
+   (outline (rect TOP -1.35080 -21.75080 17.75080 1.35080))
+   (pin PS0 (rotate -90) 0 0.00000 0.00000)
+   (pin PS0 (rotate -90) 1 0.00000 -2.54000)
+   (pin PS0 (rotate -90) 2 0.00000 -5.08000)
+   (pin PS0 (rotate -90) 3 0.00000 -7.62000)
+   (pin PS0 (rotate -90) 4 0.00000 -10.16000)
+   (pin PS0 (rotate -90) 5 0.00000 -12.70000)
+   (pin PS0 (rotate -90) 6 0.00000 -15.24000)
+   (pin PS0 (rotate -90) 7 0.00000 -17.78000)
+   (pin PS0 (rotate -90) 8 0.00000 -20.32000)
+   (pin PS0 (rotate -90) 9 16.40000 0.00000)
+   (pin PS0 (rotate -90) 10 16.40000 -2.54000)
+   (pin PS0 (rotate -90) 11 16.40000 -5.08000)
+   (pin PS0 (rotate -90) 12 16.40000 -7.62000)
+   (pin PS0 (rotate -90) 13 16.40000 -10.16000)
+   (pin PS0 (rotate -90) 14 16.40000 -12.70000)
+   (pin PS0 (rotate -90) 15 16.40000 -15.24000)
+   (pin PS0 (rotate -90) 16 16.40000 -17.78000)
+   (pin PS0 (rotate -90) 17 16.40000 -20.32000)
+  )
+  (image XCVR_DWM3000TR13_DWM3000 (side back)
+   (outline (rect TOP -2.31000 -13.59496 14.08500 10.67504))
+   (pin PS1 (rotate 0) 0 0.00000 0.00000)
+   (pin PS1 (rotate 0) 1 0.00000 -1.39996)
+   (pin PS1 (rotate 0) 2 0.00000 -2.79996)
+   (pin PS1 (rotate 0) 3 0.00000 -4.19996)
+   (pin PS1 (rotate 0) 4 0.00000 -5.59996)
+   (pin PS1 (rotate 0) 5 0.00000 -6.99996)
+   (pin PS1 (rotate 0) 6 0.00000 -8.39996)
+   (pin PS1 (rotate 0) 7 0.00000 -9.79996)
+   (pin PS1 (rotate 0) 8 12.58000 -9.79996)
+   (pin PS1 (rotate 0) 9 12.58000 -8.39996)
+   (pin PS1 (rotate 0) 10 12.58000 -6.99996)
+   (pin PS1 (rotate 0) 11 12.58000 -5.59996)
+   (pin PS1 (rotate 0) 12 12.58000 -4.19996)
+   (pin PS1 (rotate 0) 13 12.58000 -2.79996)
+   (pin PS1 (rotate 0) 14 12.58000 -1.39996)
+   (pin PS1 (rotate 0) 15 12.58000 0.00000)
+  )
+  (padstack PS0 (absolute on)
+   (shape (rect TOP -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I1 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I2 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I3 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I4 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I5 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I6 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I7 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I8 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I9 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I10 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I11 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I12 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I13 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect I14 -1.01600 -1.01600 1.01600 1.01600))
+   (shape (rect BOT -1.01600 -1.01600 1.01600 1.01600))
+  )
+  (padstack PS1 (absolute on) (shape (rect BOT -1.22500 -0.50000 1.22500 0.50000)))
+  (padstack $VIA#0_SIGNAL (absolute on)
+   (shape (circle TOP 0.76200 0 0))
+   (shape (circle I1 0.76200 0 0))
+   (shape (circle I2 0.76200 0 0))
+   (shape (circle I3 0.76200 0 0))
+   (shape (circle I4 0.76200 0 0))
+   (shape (circle I5 0.76200 0 0))
+   (shape (circle I6 0.76200 0 0))
+   (shape (circle I7 0.76200 0 0))
+   (shape (circle I8 0.76200 0 0))
+   (shape (circle I9 0.76200 0 0))
+   (shape (circle I10 0.76200 0 0))
+   (shape (circle I11 0.76200 0 0))
+   (shape (circle I12 0.76200 0 0))
+   (shape (circle I13 0.76200 0 0))
+   (shape (circle I14 0.76200 0 0))
+   (shape (circle BOT 0.76200 0 0))
+  )
+  (padstack $VIA#0_POWER (absolute on)
+   (shape (circle TOP 0.76200 0 0))
+   (shape (circle I1 0.76200 0 0))
+   (shape (circle I2 0.76200 0 0))
+   (shape (circle I3 0.76200 0 0))
+   (shape (circle I4 0.76200 0 0))
+   (shape (circle I5 0.76200 0 0))
+   (shape (circle I6 0.76200 0 0))
+   (shape (circle I7 0.76200 0 0))
+   (shape (circle I8 0.76200 0 0))
+   (shape (circle I9 0.76200 0 0))
+   (shape (circle I10 0.76200 0 0))
+   (shape (circle I11 0.76200 0 0))
+   (shape (circle I12 0.76200 0 0))
+   (shape (circle I13 0.76200 0 0))
+   (shape (circle I14 0.76200 0 0))
+   (shape (circle BOT 0.76200 0 0))
+  )
+ )
+ (network
+  (net "3V3"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_SIGNAL
+    )
+   )
+   (pins "ESP32 - S3 MINI"-11 DWM3000-4 DWM3000-5 DWM3000-6)
+  )
+  (net "5V"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_SIGNAL
+    )
+   )
+   (pins "ESP32 - S3 MINI"-9)
+  )
+  (net "CLK"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_SIGNAL
+    )
+   )
+   (pins "ESP32 - S3 MINI"-13 DWM3000-11)
+  )
+  (net "GND"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_POWER
+    )
+   )
+   (pins "ESP32 - S3 MINI"-10 DWM3000-1 DWM3000-7 DWM3000-12 DWM3000-14 DWM3000-15)
+  )
+  (net "MISO"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_SIGNAL
+    )
+   )
+   (pins "ESP32 - S3 MINI"-12 DWM3000-10)
+  )
+  (net "MOSI"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_SIGNAL
+    )
+   )
+   (pins "ESP32 - S3 MINI"-14 DWM3000-9)
+  )
+  (net "PIN 10"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_SIGNAL
+    )
+   )
+   (pins "ESP32 - S3 MINI"-15 DWM3000-8)
+  )
+  (net "PIN 4"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_SIGNAL
+    )
+   )
+   (pins "ESP32 - S3 MINI"-5 DWM3000-13)
+  )
+  (net "PIN 5"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_SIGNAL
+    )
+   )
+   (pins "ESP32 - S3 MINI"-6 DWM3000-2)
+  )
+  (net "PIN 9"
+   (circuit
+    (use_layer TOP BOT)
+    (use_via
+     $VIA#0_SIGNAL
+    )
+   )
+   (pins "ESP32 - S3 MINI"-16)
+  )
+  (class POWER
+   "GND"
+   (rule
+    (width 0.25400)
+    (clearance 0.38100)
+    (clearance 0.25400 (type wire_via))
+    (clearance 0.25400 (type wire_smd))
+    (clearance 0.25400 (type wire_pin))
+    (clearance 0.25400 (type wire_wire))
+    (clearance 0.25400 (type via_pin))
+    (clearance 0.25400 (type via_via))
+    (clearance 0.25400 (type via_smd))
+   )
+  )
+  (class SIGNAL
+   "3V3"
+   "5V"
+   "CLK"
+   "MISO"
+   "MOSI"
+   "PIN 10"
+   "PIN 4"
+   "PIN 5"
+   "PIN 9"
+   "{NC}"
+   "{VOID}"
+   (rule
+    (width 0.25400)
+    (clearance 0.38100)
+    (clearance 0.25400 (type wire_via))
+    (clearance 0.25400 (type wire_smd))
+    (clearance 0.25400 (type wire_pin))
+    (clearance 0.25400 (type wire_wire))
+    (clearance 0.25400 (type via_pin))
+    (clearance 0.25400 (type via_via))
+    (clearance 0.25400 (type via_smd))
+   )
+  )
+ )
+ (wiring
+   (wire (path BOT 0.25400 -115.90000 43.80004 -115.00688 43.80004) (net "MISO") (type protect)
+  )
+   (wire (path BOT 0.25400 -101.40000 60.30000 -101.75247 60.30000 -110.89333 51.15914
+    -110.89333 46.51815 -114.57790 42.83358 -115.46646 42.83358 -115.90000 42.40004)
+   (net "MOSI") (type protect))
+   (wire (path BOT 0.25400 -101.40000 57.76000 -101.54080 57.76000 -109.27055 50.03025
+    -109.27055 46.71414 -114.98465 41.00004 -115.90000 41.00004) (net "PIN 10") (type protect)
+  )
+   (wire (path BOT 0.25400 -117.80000 60.30000 -117.83913 60.30000 -119.28944 58.84969
+    -119.28944 50.45358 -117.10222 48.26636 -115.55000 48.26636 -115.90000 48.00004)
+   (net "PIN 4") (type protect))
+   (wire (path BOT 0.25400 -101.40000 62.84000 -101.58666 62.84000 -113.01000 51.41666
+    -113.01000 46.08999 -113.89995 45.20004 -115.90000 45.20004) (net "CLK") (type protect)
+  )
+   (wire (path BOT 0.25400 -101.40000 65.38000 -101.52150 65.38000) (net "MISO") (type protect)
+  )
+   (wire (path BOT 0.25400 -101.40000 65.38000 -101.27288 65.38000 -99.40000 63.50712
+    -99.40000 40.70000 -99.98118 40.11882 -117.33658 40.11882 -118.08516 40.86740 -118.08516 43.54364
+   -117.82876 43.80004 -115.90000 43.80004) (net "MISO") (type protect))
+ )
+)
