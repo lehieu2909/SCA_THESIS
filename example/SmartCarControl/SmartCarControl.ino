@@ -5,7 +5,7 @@
  * SCK  = GPIO 12
  * MISO = GPIO 13
  * MOSI = GPIO 11
- * CS   = GPIO 10
+ * CS   = GPIO 9
  * 
  * CAN frames are stored in separate files for better organization
  */
@@ -15,7 +15,7 @@
 #include "can_commands.h"
 
 // ==================== Configuration ====================
-#define CAN_CS    10
+#define CAN_CS    9
 #define MCP_CLOCK MCP_8MHZ   // Change to MCP_16MHZ if your module uses 16MHz
 
 // ==================== Global Objects ====================

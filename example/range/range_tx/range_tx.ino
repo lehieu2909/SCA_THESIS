@@ -3,8 +3,8 @@
 
 extern SPISettings _fastSPI;
 
-#define PIN_RST 4
-#define PIN_IRQ 5
+#define PIN_RST 5
+#define PIN_IRQ 4
 #define PIN_SS 10
 
 #define TX_ANT_DLY 16385

@@ -26,6 +26,8 @@ def get_local_ip():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+
     # Startup
     init_db()
     print("\n" + "=" * 50)
@@ -42,7 +44,7 @@ async def lifespan(app: FastAPI):
     print("  DELETE /vehicle/{vehicle_id}")
     print("=" * 50)
 
-    # Đăng ký mDNS để ESP32 tự tìm thấy server
+    # Đăng ký mDNS trong thread riêng để không block async event loop
     local_ip = get_local_ip()
     zeroconf = Zeroconf()
     mdns_info = ServiceInfo(
@@ -52,15 +54,22 @@ async def lifespan(app: FastAPI):
         port=8000,
         properties={"service": "smartcar"},
     )
-    zeroconf.register_service(mdns_info)
-    print(f"✓ mDNS registered: smartcar._http._tcp.local → {local_ip}:8000")
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, zeroconf.register_service, mdns_info)
+        print(f"mDNS registered: smartcar._http._tcp.local -> {local_ip}:8000")
+    except Exception as e:
+        print(f"mDNS registration failed (non-fatal): {e}")
     print("=" * 50 + "\n")
 
     yield  # Server đang chạy
 
     # Shutdown
-    zeroconf.unregister_service(mdns_info)
-    zeroconf.close()
+    try:
+        await loop.run_in_executor(None, zeroconf.unregister_service, mdns_info)
+    except Exception:
+        pass
+    await loop.run_in_executor(None, zeroconf.close)
 
 
 app = FastAPI(title="Smart Car Access Server", lifespan=lifespan)

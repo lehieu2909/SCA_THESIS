@@ -1,12 +1,12 @@
 /**
  * BLE_UWB_Anchor.ino — Smart Car Anchor (phía xe)
  *
- * Flow đơn giản:
- *   1. BLE advertise → Tag kết nối → Challenge-Response auth
- *   2. Auth OK → Tag gửi TAG_UWB_READY → Anchor init UWB → gửi UWB_ACTIVE
- *   3. UWB ranging: ≤ 3m → mở khóa, > 3m → khóa
+ * Flow:
+ *   1. BLE advertise liên tục → Tag kết nối → Challenge-Response auth
+ *   2. Tag đo RSSI, khi ≤ 20m gửi TAG_UWB_READY → Anchor init UWB → gửi UWB_ACTIVE
+ *   3. UWB ranging: ≤ 3m → mở khóa, > 3.5m → khóa (chỉ khi chuyển trạng thái, có hysteresis)
  *   4. Tag ra > 20m → gửi UWB_STOP → Anchor tắt UWB + khóa xe
- *   5. BLE ngắt → khóa xe + tắt UWB → quảng bá lại
+ *   5. BLE ngắt → khóa xe + tắt UWB → quảng bá lại chờ kết nối mới
  */
 
 #include <WiFi.h>
@@ -594,7 +594,6 @@ void startBLE() {
   hexStringToBytes(bleKeyHex.c_str(), pairingKey, 16);
 
   BLEDevice::init(DEVICE_NAME);
-  BLEDevice::setPower(ESP_PWR_LVL_P9);  // Max TX power (+9 dBm) for longer range
   BLEServer* pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 

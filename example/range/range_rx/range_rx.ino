@@ -4,8 +4,8 @@
 extern SPISettings _fastSPI;  // Can be modified on ESP32 (not const)
 extern SPISettings _slowSPI;  // 2MHz SPI - stable for long jumper wires
 
-#define PIN_RST 4
-#define PIN_IRQ 5
+#define PIN_RST 5
+#define PIN_IRQ 4
 #define PIN_SS 10
 
 #define RNG_DELAY_MS 100
@@ -14,9 +14,8 @@ extern SPISettings _slowSPI;  // 2MHz SPI - stable for long jumper wires
 #define ALL_MSG_COMMON_LEN 10
 #define ALL_MSG_SN_IDX 2
 #define RESP_MSG_POLL_RX_TS_IDX 10
-#define RESP_MSG_RESP_TX_TS_IDX 15
-#define RESP_MSG_TS_LEN 5
-#define TS_40B_SIZE 5
+#define RESP_MSG_RESP_TX_TS_IDX 14
+#define RESP_MSG_TS_LEN 4
 #define POLL_TX_TO_RESP_RX_DLY_UUS 500
 #define RESP_RX_TIMEOUT_UUS 2000  // RX timeout (in 1.0256 μs units) = ~2ms
 /* Default communication configuration. We use default non-STS DW mode. */
@@ -37,7 +36,7 @@ static dwt_config_t config = {
 };
 
 static uint8_t tx_poll_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'W', 'A', 'V', 'E', 0xE0, 0, 0};
-static uint8_t rx_resp_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'V', 'E', 'W', 'A', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static uint8_t rx_resp_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'V', 'E', 'W', 'A', 0xE1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 static uint8_t frame_seq_nb = 0;
 static uint8_t rx_buffer[20];
 static uint32_t status_reg = 0;
@@ -314,30 +313,19 @@ bool performRanging()
       
       if (memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) == 0)
       {
-        /* Valid response - calculate distance using 64-bit timestamps */
-        uint64_t poll_tx_ts = get_tx_timestamp_u64();
-        uint64_t resp_rx_ts = get_rx_timestamp_u64();
-        uint64_t poll_rx_ts, resp_tx_ts;
-        
-        /* Extract 40-bit timestamps from received message (5 bytes each) */
-        poll_rx_ts = 0;
-        for (int i = 0; i < TS_40B_SIZE; i++) {
-          poll_rx_ts += ((uint64_t)rx_buffer[RESP_MSG_POLL_RX_TS_IDX + i]) << (i * 8);
-        }
-        
-        resp_tx_ts = 0;
-        for (int i = 0; i < TS_40B_SIZE; i++) {
-          resp_tx_ts += ((uint64_t)rx_buffer[RESP_MSG_RESP_TX_TS_IDX + i]) << (i * 8);
-        }
-        
-        /* Calculate clock offset */
-        float clockOffsetRatio = ((float)dwt_readclockoffset()) / (uint32_t)(1 << 26);
-        
-        /* Compute time of flight using 64-bit arithmetic */
-        int64_t rtd_init = (int64_t)resp_rx_ts - (int64_t)poll_tx_ts;
-        int64_t rtd_resp = (int64_t)resp_tx_ts - (int64_t)poll_rx_ts;
-        
-        tof = ((rtd_init - rtd_resp * (1.0 - clockOffsetRatio)) / 2.0) * DWT_TIME_UNITS;
+        /* Valid response - calculate distance */
+        uint32_t poll_tx_ts = dwt_readtxtimestamplo32();
+        uint32_t resp_rx_ts = dwt_readrxtimestamplo32();
+        float clockOffsetRatio = (float)dwt_readclockoffset() / (float)(1UL << 26);
+
+        uint32_t poll_rx_ts, resp_tx_ts;
+        resp_msg_get_ts(&rx_buffer[RESP_MSG_POLL_RX_TS_IDX], &poll_rx_ts);
+        resp_msg_get_ts(&rx_buffer[RESP_MSG_RESP_TX_TS_IDX], &resp_tx_ts);
+
+        int32_t rtd_init = (int32_t)(resp_rx_ts - poll_tx_ts);
+        int32_t rtd_resp = (int32_t)(resp_tx_ts - poll_rx_ts);
+
+        tof = (((double)rtd_init - ((double)rtd_resp * (1.0 - (double)clockOffsetRatio))) / 2.0) * DWT_TIME_UNITS;
         distance = tof * SPEED_OF_LIGHT;
         
         Serial.print(" ");

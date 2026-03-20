@@ -3,7 +3,7 @@
 
 // ================== MCP2515 - ESP32-S3 SPI MẶC ĐỊNH ==================
 // ESP32-S3 default SPI pins: MOSI=11, MISO=13, SCK=12
-#define CAN_CS    10
+#define CAN_CS    9
 
 MCP2515 mcp2515(CAN_CS);
 struct can_frame canMsg;

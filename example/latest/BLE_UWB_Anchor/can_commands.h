@@ -46,7 +46,7 @@ private:
         failed++;
       }
       
-      delay(20);
+      delay(50);
     }
     
     Serial.println("===================================");
