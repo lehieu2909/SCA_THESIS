@@ -234,10 +234,13 @@
  */
 //#define CONFIG_OPTION_32
 
-/* Configuration option 33.
- * Channel 5, PRF 64M, Preamble Length 128, PAC 8, Preamble code 9, Data Rate 6.8M, STS Length 128
+/* Configuration option 19.
+ * Channel 5, PRF 64M, Preamble Length 128, PAC 8, Preamble code 9, Data Rate 6.8M, STS Length 64
+ * Selected to match runtime dwt_config_t used in BLE_UWB_Anchor/Tag (PLEN_128, 6.8M, CH5).
+ * Note: STS mode is set to OFF in the local dwt_config_t structs at runtime;
+ *       the STS_MODE_1 here only affects unused shared-function helper references.
  */
-#define CONFIG_OPTION_33
+#define CONFIG_OPTION_19
 
 extern char dist_str[16];
 

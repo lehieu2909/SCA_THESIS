@@ -6,7 +6,7 @@
  *   2. Challenge-Response auth (HMAC-SHA256)
  *   3. Auth OK → khởi tạo UWB ngay
  *   4. UWB ranging: ≤ 3m → mở khóa, > 3.5m → khóa
- *   5. UWB > 20m → tắt UWB + gửi UWB_STOP (BLE vẫn giữ)
+ *   5. UWB > 10m → tắt UWB + gửi UWB_STOP (BLE vẫn giữ)
  *   6. Quay lại gần (RSSI) → bật lại UWB
  *   7. BLE ngắt → tắt UWB + quét lại
  */
@@ -34,9 +34,9 @@ bool useCorrectKey = true;
 // ── Thresholds ────────────────────────────────────────────────────────────────
 #define UWB_UNLOCK_DISTANCE_M    (3.0)   // ≤ 3m → mở khóa
 #define UWB_LOCK_DISTANCE_M      (3.5)   // > 3.5m → khóa (khoảng chết 0.5m tránh nhấp nháy)
-#define UWB_FAR_DISTANCE_M       (20.0)  // > 20m → tắt UWB
-#define RSSI_THRESHOLD_DBM       (-105)  // ~20m BLE, dùng để restart UWB sau khi ra xa
-#define RSSI_CONNECT_MIN_DBM     (-88)   // RSSI tối thiểu để thử kết nối (tránh treo ở khoảng cách xa)
+#define UWB_FAR_DISTANCE_M       (10.0)  // > 10m → tắt UWB
+#define RSSI_THRESHOLD_DBM       (-80)   // ~10m BLE, dùng để restart UWB sau khi ra xa
+#define RSSI_CONNECT_MIN_DBM     (-95)   // RSSI tối thiểu để thử kết nối (~12-13m)
 #define RSSI_CHECK_INTERVAL_MS   (1000U) // Check RSSI mỗi 1s khi chờ restart UWB
 #define UWB_REQUEST_RETRY_MS     (5000U) // Retry TAG_UWB_READY sau 5s nếu Anchor chưa phản hồi
 
@@ -92,7 +92,7 @@ static bool     uwbInitialized  = false;
 static bool     anchorUwbReady  = false;
 static bool     uwbRequested    = false;
 static unsigned long uwbRequestTime = 0U;
-static bool     uwbStoppedFar   = false;      // UWB tắt vì >20m, cần RSSI để restart
+static bool     uwbStoppedFar   = false;      // UWB tắt vì >10m, cần RSSI để restart
 static unsigned long lastRssiCheck = 0U;
 
 static uint8_t  tx_poll_msg[]  = {0x41U,0x88U,0U,0xCAU,0xDEU,'W','A','V','E',0xE0U,0U,0U};
@@ -103,6 +103,12 @@ static uint32_t status_reg     = 0U;
 static double   tof            = 0.0;
 static double   distance       = 0.0;
 static bool     tagInUnlockZone = false;
+
+// ── Moving average distance filter ───────────────────────────────────────────
+#define UWB_DIST_FILTER_N       (5U)   // Trung bình 5 mẫu (~500ms ở 10Hz)
+static double   distBuf[UWB_DIST_FILTER_N] = {};
+static uint8_t  distBufIdx  = 0U;
+static bool     distBufFull = false;
 
 // ── Khai báo hàm ─────────────────────────────────────────────────────────────
 uint64_t get_tx_timestamp_u64(void);
@@ -252,12 +258,10 @@ bool connectToServer(void) {
   pClient = BLEDevice::createClient();
   pClient->setClientCallbacks(&clientCallback);
 
-  // Timeout 5s per attempt (default 30s quá lâu khi tín hiệu yếu)
-  pClient->setConnectTimeout(5);
-
   bool connOk = false;
   for (int attempt = 1; attempt <= 3; attempt++) {
-    if (pClient->connect(myDevice)) {
+    // connectTimeout(device, ms): timeout 5s per attempt (default portMAX_DELAY quá lâu khi tín hiệu yếu)
+    if (pClient->connectTimeout(myDevice, 5000)) {
       connOk = true;
       break;
     }
@@ -402,6 +406,8 @@ void deinitUWB(void) {
   digitalWrite(PIN_RST, LOW);
   uwbInitialized = false;
   tagInUnlockZone = false;
+  distBufIdx  = 0U;
+  distBufFull = false;
   Serial.println("UWB: stopped");
 }
 
@@ -462,12 +468,21 @@ void uwbInitiatorLoop(void) {
 
   if (distance < 0 || distance > 100) return;
 
-  // > 20m: tắt UWB, gửi UWB_STOP cho Anchor
-  if (distance > UWB_FAR_DISTANCE_M) {
+  // Moving average filter: tích lũy mẫu rồi dùng trung bình để quyết định
+  distBuf[distBufIdx] = distance;
+  distBufIdx = (distBufIdx + 1U) % UWB_DIST_FILTER_N;
+  if (distBufIdx == 0U) distBufFull = true;
+  uint8_t nSamples = distBufFull ? UWB_DIST_FILTER_N : distBufIdx;
+  double filteredDist = 0.0;
+  for (uint8_t i = 0U; i < nSamples; i++) filteredDist += distBuf[i];
+  filteredDist /= (double)nSamples;
+
+  // > 10m: tắt UWB, gửi UWB_STOP cho Anchor
+  if (filteredDist > UWB_FAR_DISTANCE_M) {
     tagInUnlockZone = false;
     if (connected && pRemoteCharacteristic)
       pRemoteCharacteristic->writeValue("UWB_STOP", 8U);
-    Serial.printf("UWB: %.1fm -> ngoai 20m, tat UWB\n", distance);
+    Serial.printf("UWB: raw=%.1fm avg=%.1fm -> ngoai 10m, tat UWB\n", distance, filteredDist);
     deinitUWB();
     uwbStoppedFar = true;
     uwbRequested = false;
@@ -475,34 +490,34 @@ void uwbInitiatorLoop(void) {
     return;
   }
 
-  // Lock/Unlock (chỉ gửi khi chuyển trạng thái)
-  bool shouldUnlock = (distance <= UWB_UNLOCK_DISTANCE_M);
-  bool shouldLock   = (distance > UWB_LOCK_DISTANCE_M);
+  // Lock/Unlock (chỉ gửi khi chuyển trạng thái, dùng khoảng cách đã lọc)
+  bool shouldUnlock = (filteredDist <= UWB_UNLOCK_DISTANCE_M);
+  bool shouldLock   = (filteredDist > UWB_LOCK_DISTANCE_M);
 
   if (shouldUnlock && !tagInUnlockZone) {
     tagInUnlockZone = true;
     if (connected && pRemoteCharacteristic) {
       char msg[32];
-      snprintf(msg, sizeof(msg), "VERIFIED:%.1fm", distance);
+      snprintf(msg, sizeof(msg), "VERIFIED:%.1fm", filteredDist);
       pRemoteCharacteristic->writeValue(msg, strlen(msg));
     }
-    Serial.printf("UWB: %.1fm -> MO KHOA\n", distance);
+    Serial.printf("UWB: avg=%.1fm -> MO KHOA\n", filteredDist);
 
   } else if (shouldLock && tagInUnlockZone) {
     tagInUnlockZone = false;
     if (connected && pRemoteCharacteristic) {
       char msg[32];
-      snprintf(msg, sizeof(msg), "WARNING:%.1fm", distance);
+      snprintf(msg, sizeof(msg), "WARNING:%.1fm", filteredDist);
       pRemoteCharacteristic->writeValue(msg, strlen(msg));
     }
-    Serial.printf("UWB: %.1fm -> KHOA\n", distance);
+    Serial.printf("UWB: avg=%.1fm -> KHOA\n", filteredDist);
   }
 
   // Log khoảng cách định kỳ (2s)
   static unsigned long lastDistLog = 0;
   if (millis() - lastDistLog > 2000) {
     lastDistLog = millis();
-    Serial.printf("UWB: %.1fm %s\n", distance, tagInUnlockZone ? "[MO]" : "[KHOA]");
+    Serial.printf("UWB: raw=%.1fm avg=%.1fm %s\n", distance, filteredDist, tagInUnlockZone ? "[MO]" : "[KHOA]");
   }
 }
 
@@ -537,7 +552,7 @@ void setup(void) {
   pBLEScan->setWindow(80U);      // 80 * 0.625ms = 50ms (80% duty cycle → bắt tín hiệu yếu tốt hơn)
 
   Serial.println("Scanning for Anchor...");
-  pBLEScan->start(3, false);
+  pBLEScan->start(5, false);
   doScan = true;
 }
 
