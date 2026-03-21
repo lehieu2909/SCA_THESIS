@@ -205,19 +205,4 @@ typedef void (*port_dwic_isr_t)(void);
  */
 void port_set_dwic_isr(port_dwic_isr_t isr);
 
-#if 0
-void sleepms(uint32_t x);
-int sleepus(uint32_t x);
-void deca_sleep(uint8_t time_ms);
-void deca_usleep(uint8_t time_us);
-void open_spi(void);
-void close_spi(void);
-
-
-void port_set_dw_ic_spi_slowrate(void);
-void port_set_dw_ic_spi_fastrate(void);
-void reset_DWIC(void);
-int spi_tranceiver (uint8_t *data);
-#endif
-
 #endif /* PORT_H_ */

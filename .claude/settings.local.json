@@ -3,7 +3,8 @@
     "allow": [
       "Bash(find /d/SCA/Src -type f -name *.cpp -o -name *.h)",
       "Bash(find /d/SCA/lib/Dw3000/src -type f -name *.h -o -name *.cpp)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(find D:/SCA/lib/ -name *.c -o -name *.cpp -o -name *.h)"
     ]
   }
 }

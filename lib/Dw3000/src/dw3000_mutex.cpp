@@ -70,12 +70,7 @@ decaIrqStatus_t decamutexon(void)
  *
  * returns the state of the DW1000 interrupt
  */
-void decamutexoff(decaIrqStatus_t s)        // put a function here that re-enables the interrupt at the end of the critical section
+void decamutexoff(decaIrqStatus_t s)
 {
     portEXIT_CRITICAL(&my_mutex);
-    /*portENABLE_INTERRUPTS();
-
-    if(s) { //need to check the port state as we can't use level sensitive interrupt on the STM ARM
-        port_EnableEXT_IRQ();
-    }*/
 }

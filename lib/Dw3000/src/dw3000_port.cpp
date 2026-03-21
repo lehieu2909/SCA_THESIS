@@ -23,10 +23,6 @@ const SPISettings* _currentSPI = &_fastSPI;
 
 boolean _debounceClockEnabled = false;
 
-/* SPI configs. */
-/*const SPISettings _fastSPI;
-const SPISettings _slowSPI;
-const SPISettings* _currentSPI;*/
 
   /* register caches. */
 byte _syscfg[LEN_SYS_CFG];
@@ -462,23 +458,6 @@ int readfromspi(uint16_t headerLength, uint8_t *headerBuffer, uint16_t readLengt
   delayMicroseconds(5);
   digitalWrite(_ss, HIGH);
   SPI.endTransaction();
-
-
-
-
-  
-  /*open_spi(); // we first open the SPI line by setting it to low
-  for(int i=0; i<headerLength; i++) // write our header bytes to selected chip
-  {
-    spi_tranceiver(headerBuffer[i]);
-  }
-  for(int i=0; i<readLength; i++)
-  {
-    readBuffer[i] = spi_tranceiver(0x00); // store read byte value in the buffer
-  
-  }
-  sleepus(5); // not sure if this is needed?
-  close_spi(); // close the SPI line by setting it to high*/
   return 0;
 }
 
@@ -495,21 +474,6 @@ int writetospi(uint16_t headerLength, uint8_t *headerBuffer, uint16_t bodyLength
   delayMicroseconds(5);
   digitalWrite(_ss, HIGH);
   SPI.endTransaction();
-
-  
-  /*open_spi(); // we first open the SPI line by setting it to low
-  for(int i=0; i<headerLength; i++) // write our header bytes to selected chip
-  {
-    spi_tranceiver(headerBuffer[i]);  
-    
-  }
-  for(int i=0; i<bodyLength; i++) // write our body data bytes to the selected chip
-  {
-    spi_tranceiver(bodyBuffer[i]);
-    
-  }
-  sleepus(5); // not sure if this is needed?
-  close_spi(); // close the SPI line by setting it to high*/
   return 0;
 }
 
@@ -529,19 +493,19 @@ void port_set_dw_ic_spi_fastrate(uint8_t irq, uint8_t rst, uint8_t ss) {
 }
 
 uint32_t port_GetEXT_IRQStatus(void) {
-
+    return 0; // IRQ polling not used on this platform
 }
 
 uint32_t port_CheckEXT_IRQ(void) {
-
+    return 0;
 }
 
 void port_DisableEXT_IRQ(void) {
-
+    // not implemented — polling-based IRQ model
 }
 
 void port_EnableEXT_IRQ(void) {
-
+    // not implemented — polling-based IRQ model
 }
 
 /* DW IC IRQ handler definition. */
@@ -562,67 +526,7 @@ static port_dwic_isr_t port_dwic_isr = NULL;
  */
 void port_set_dwic_isr(port_dwic_isr_t dwic_isr)
 {
-    /* Check DW IC IRQ activation status. */
-    //ITStatus en = port_GetEXT_IRQStatus();
-
-    /* If needed, deactivate DW IC IRQ during the installation of the new handler. */
-    //port_DisableEXT_IRQ();
     portDISABLE_INTERRUPTS();
     port_dwic_isr = dwic_isr;
     portENABLE_INTERRUPTS();
-/*
-    if (!en)
-    {
-        port_EnableEXT_IRQ();
-    }*/
 }
-
-
-#if 0
-void open_spi(void)
-{
-  //PORTB &= ~_BV(PORTB2); // set SS pin to LOW to enable SPI
-}
-
-void close_spi(void)
-{
-  //PORTB |= _BV(PORTB2); // set SS pin to HIGH to disable SPI
-}
-
-int spi_tranceiver (uint8_t *data) // send single byte
-{
-  /*SPDR0 = data; // Load data into the buffer
-  sleepus(1);
-  while(!(SPSR0 & _BV(SPIF) )); // Wait until transmission complete
-  
-  // Return received data
-  return(SPDR0);*/
-  return (0);
-}
-
-
-
-void port_set_dw_ic_spi_slowrate(void)
-{
-  //SPSR0 &= ~_BV(SPI2X); // turn off fast speed
-}
-
-void port_set_dw_ic_spi_fastrate(void)
-{
-  //SPSR0 |= _BV(SPI2X); // set fast speed by changing oscillator speed to FOSC / 2
-}
-
-void reset_DWIC(void) // currently not used as we are using softreset()
-{
-  /*DDR_PORTD |= _BV(DD_RESET_PIN); // set reset PIN as output
-  PORTD &= ~_BV(PORTD7); // set reset pin to low for brief amount of time
-
-  sleepus(1);
-
-  DDR_PORTD &= ~_BV(DD_RESET_PIN); // set reset pin to input again
-
-  sleepms(2); // allow for chip to turn back on*/
-
-}
-
-#endif

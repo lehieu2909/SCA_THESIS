@@ -1,12 +1,14 @@
 /**
- * BLE_UWB_Anchor.ino — Smart Car Anchor (phía xe)
+ * BLE_UWB_Anchor.ino — Smart Car Anchor (vehicle side)
  *
- * Flow đơn giản:
- *   1. BLE advertise → Tag kết nối → Challenge-Response auth
- *   2. Auth OK → Tag gửi TAG_UWB_READY → Anchor init UWB → gửi UWB_ACTIVE
- *   3. UWB ranging: ≤ 3m → mở khóa, > 3m → khóa
- *   4. Tag ra > 20m → gửi UWB_STOP → Anchor tắt UWB + khóa xe
- *   5. BLE ngắt → khóa xe + tắt UWB → quảng bá lại
+ * Flow:
+ *   1. Load pairing key from NVS; if missing, fetch via WiFi (ECDH + AES-GCM)
+ *   2. Advertise BLE → Tag connects → send 16-byte random challenge
+ *   3. Verify Tag's HMAC-SHA256 response with stored pairing key
+ *   4. Auth OK → wait for TAG_UWB_READY → init DW3000 → notify UWB_ACTIVE
+ *   5. Respond to UWB poll frames (SS-TWR responder)
+ *   6. VERIFIED command (≤ 3 m)  → unlock car via CAN
+ *   7. WARNING / UWB_STOP / disconnect → lock car + deinit UWB
  */
 
 #include <WiFi.h>
@@ -29,50 +31,64 @@
 #include <mbedtls/md.h>
 #include <mbedtls/base64.h>
 
+// =============================================================================
+// USER CONFIGURATION — edit before flashing
+// =============================================================================
+const char* WIFI_SSID       = "Student";
+const char* WIFI_PASSWORD   = "";
+const char* VEHICLE_ID      = "1HGBH41JXMN109186";
+static String serverBaseUrl = "http://10.0.4.32:8000"; // fallback; overridden by mDNS
+// =============================================================================
 
-// ── Cấu hình WiFi & Server ───────────────────────────────────────────────────
-const char* ssid          = "nubia Neo 2";
-const char* password      = "29092004";
-const char* vehicleId     = "1HGBH41JXMN109186";
-static String serverBaseUrl = "http://10.36.83.66:8000"; // Tự động tìm qua mDNS
-
-// ── BLE UUIDs ────────────────────────────────────────────────────────────────
+// ── BLE ──────────────────────────────────────────────────────────────────────
 #define DEVICE_NAME         "SmartCar_Vehicle"
 #define SERVICE_UUID        "12345678-1234-5678-1234-56789abcdef0"
 #define CHARACTERISTIC_UUID "abcdef12-3456-7890-abcd-ef1234567890"
 #define AUTH_CHAR_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHALLENGE_CHAR_UUID "ceb5483e-36e1-4688-b7f5-ea07361b26a9"
 
-// ── Timing ───────────────────────────────────────────────────────────────────
-#define CHALLENGE_SEND_DELAY_MS  (200U)  // Chờ Tag subscribe notification
+// Delay after connect before sending challenge, giving the Tag time to subscribe
+#define CHALLENGE_SEND_DELAY_MS (200U)
 
-// ── Chân phần cứng ───────────────────────────────────────────────────────────
+// ── Hardware pins ─────────────────────────────────────────────────────────────
 #define PIN_RST  (5)
 #define PIN_IRQ  (4)
 #define PIN_SS   (10)
 #define CAN_CS   (9)
 #define MCP_CLOCK MCP_8MHZ
 
-// ── UWB: Antenna delay (calibrated) + Frame config ───────────────────────────
-#define TX_ANT_DLY              (16385U)
+// ── UWB ───────────────────────────────────────────────────────────────────────
+#define TX_ANT_DLY              (16385U) // calibrated antenna delay
 #define RX_ANT_DLY              (16385U)
 #define ALL_MSG_COMMON_LEN      (10U)
 #define ALL_MSG_SN_IDX          (2U)
 #define RESP_MSG_POLL_RX_TS_IDX (10U)
 #define RESP_MSG_RESP_TX_TS_IDX (14U)
-#define POLL_RX_TO_RESP_TX_DLY_UUS (800U)
+// Delay from the Poll RMARKER (start of preamble) to the Response RMARKER.
+// With 1024-symbol preamble at 850 kbps the full poll frame takes ~1400 µs to transmit.
+// POLL_RX_TO_RESP_TX_DLY_UUS must be > frame_rx_duration + software_processing_time.
+// 8000 µs gives ~6.6 ms headroom — enough even when BLE task preempts Core 1.
+// SS-TWR accuracy is unaffected because exact timestamps are embedded in the response frame.
+#define POLL_RX_TO_RESP_TX_DLY_UUS (2500U)
 #define MSG_BUFFER_SIZE         (20U)
 
-// ── DW3000 RF config ─────────────────────────────────────────────────────────
+// DW3000 RF configuration
+// Channel 5 | 1024-symbol preamble | PAC 32 | code 9 | 850 kbps | STS off
+//
+// PAC 32 is required for 1024-symbol preamble (DW3000 user manual: PAC must
+// match preamble length: 64/128→PAC8, 256/512→PAC16, 1024→PAC32, 4096→PAC64).
+// Using PAC 8 with a 1024-symbol preamble causes poor preamble acquisition and
+// limits range to ~5 m. PAC 32 restores the full link budget of the long preamble.
+//
+// SFD timeout formula: preamble_length + 1 + SFD_length - PAC_size = 1024+1+8-32 = 1001
 static dwt_config_t uwbConfig = {
-    5, DWT_PLEN_128, DWT_PAC8, 9, 9, 1,
-    DWT_BR_6M8, DWT_PHRMODE_STD, DWT_PHRRATE_STD,
-    (129 + 8 - 8), DWT_STS_MODE_OFF, DWT_STS_LEN_64, DWT_PDOA_M0
+    5, DWT_PLEN_1024, DWT_PAC32, 9, 9, 1,
+    DWT_BR_850K, DWT_PHRMODE_STD, DWT_PHRRATE_STD,
+    1001, DWT_STS_MODE_OFF, DWT_STS_LEN_64, DWT_PDOA_M0
 };
 extern dwt_txconfig_t txconfig_options;
 
-// ── Trạng thái hệ thống ──────────────────────────────────────────────────────
-// MUST be volatile: written on Core 0 (BLE callbacks), read on Core 1 (loop)
+// ── System state (volatile: written on BLE Core 0, read on loop Core 1) ──────
 static volatile bool deviceConnected   = false;
 static volatile bool prevConnected     = false;
 static volatile bool authenticated     = false;
@@ -82,71 +98,68 @@ static volatile bool carUnlocked       = false;
 static volatile bool hasKey            = false;
 static volatile bool bleStarted        = false;
 static volatile unsigned long connectionTime = 0U;
-// ── Deferred actions (BLE callbacks on Core 0 → loop on Core 1) ─────────
-// MUST be volatile: written on Core 0 (BLE callbacks), read on Core 1 (loop)
+
+// Deferred action flags: BLE callbacks (Core 0) set these; loop() (Core 1) acts on them
 static volatile bool pendingLock            = false;
 static volatile bool pendingUnlock          = false;
 static volatile bool pendingUwbInit         = false;
 static volatile bool pendingUwbDeinit       = false;
 static volatile bool pendingUwbActiveNotify = false;
 static volatile bool pendingAuthVerify      = false;
-// ── BLE Characteristics ──────────────────────────────────────────────────────
+
+// ── BLE characteristics ───────────────────────────────────────────────────────
 static BLECharacteristic *pCharacteristic          = nullptr;
 static BLECharacteristic *pChallengeCharacteristic = nullptr;
 static BLECharacteristic *pAuthCharacteristic      = nullptr;
 
-// ── Auth buffers ─────────────────────────────────────────────────────────────
+// ── Auth buffers ──────────────────────────────────────────────────────────────
 static uint8_t currentChallenge[16];
 static uint8_t pairingKey[16];
 static uint8_t responseBuffer[32];
 static size_t  responseBufferLen = 0;
 
-// ── NVS & Crypto ─────────────────────────────────────────────────────────────
+// ── NVS + crypto ─────────────────────────────────────────────────────────────
 static Preferences             preferences;
 static String                  bleKeyHex = "";
 static mbedtls_entropy_context entropy;
 static mbedtls_ctr_drbg_context ctr_drbg;
 
-// ── CAN Bus ──────────────────────────────────────────────────────────────────
-static MCP2515*    pMcp2515   = nullptr; // Init sau WiFi tránh SPI conflict
+// ── CAN bus ───────────────────────────────────────────────────────────────────
+static MCP2515*    pMcp2515    = nullptr;
 static CANCommands* pCanControl = nullptr;
 
-// ── UWB Frame buffers ────────────────────────────────────────────────────────
-static uint8_t rx_poll_msg[] = {0x41U, 0x88U, 0U, 0xCAU, 0xDEU, 'W','A','V','E', 0xE0U, 0U, 0U};
-static uint8_t tx_resp_msg[] = {0x41U, 0x88U, 0U, 0xCAU, 0xDEU, 'V','E','W','A', 0xE1U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
+// ── UWB frame buffers ─────────────────────────────────────────────────────────
+// Header bytes: 0x41 0x88 = IEEE 802.15.4 frame control; 0xCA 0xDE = PAN ID; 'WAVE'/'VEWA' = app ID
+static uint8_t rx_poll_msg[] = {0x41U,0x88U,0U,0xCAU,0xDEU,'W','A','V','E',0xE0U,0U,0U};
+static uint8_t tx_resp_msg[] = {0x41U,0x88U,0U,0xCAU,0xDEU,'V','E','W','A',0xE1U,0U,0U,0U,0U,0U,0U,0U,0U,0U,0U};
 static uint8_t  rx_buffer[MSG_BUFFER_SIZE];
 static uint8_t  frame_seq_nb       = 0U;
 static uint32_t status_reg         = 0U;
 static unsigned long lastPollReceivedTime = 0U;
 
-// ── Khai báo hàm ─────────────────────────────────────────────────────────────
-uint64_t get_rx_timestamp_u64(void);
-void     resp_msg_set_ts(uint8_t *ts_field, uint64_t ts);
-bool     initUWB(void);
-void     deinitUWB(void);
-void     uwbResponderLoop(void);
+// =============================================================================
+// Crypto helpers
+// =============================================================================
 
-// ── Crypto helpers ───────────────────────────────────────────────────────────
-
-void hexStringToBytes(const char* hex, uint8_t* bytes, size_t length) {
+static void hexStringToBytes(const char* hex, uint8_t* bytes, size_t length) {
   for (size_t i = 0; i < length; i++) {
     sscanf(hex + 2 * i, "%2hhx", &bytes[i]);
   }
 }
 
-// Dùng mbedtls CSPRNG thay vì random() để đảm bảo bảo mật
-void generateChallenge(uint8_t* challenge, size_t length) {
+// Uses mbedTLS CSPRNG for secure random challenge generation
+static void generateChallenge(uint8_t* challenge, size_t length) {
   mbedtls_ctr_drbg_random(&ctr_drbg, challenge, length);
 }
 
-bool computeHMAC(const uint8_t* key, size_t keyLen,
-                 const uint8_t* data, size_t dataLen,
-                 uint8_t* output) {
+static bool computeHMAC(const uint8_t* key, size_t keyLen,
+                        const uint8_t* data, size_t dataLen,
+                        uint8_t* output) {
   const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   return (mbedtls_md_hmac(md, key, keyLen, data, dataLen, output) == 0);
 }
 
-void printHex(const char* label, const uint8_t* data, size_t length) {
+static void printHex(const char* label, const uint8_t* data, size_t length) {
   Serial.print(label);
   for (size_t i = 0; i < length; i++) {
     if (data[i] < 0x10) Serial.print("0");
@@ -155,15 +168,14 @@ void printHex(const char* label, const uint8_t* data, size_t length) {
   Serial.println();
 }
 
-// HKDF-SHA256: derive key material từ shared secret
-int hkdf_sha256(const unsigned char* salt, size_t salt_len,
-                const unsigned char* ikm,  size_t ikm_len,
-                const unsigned char* info, size_t info_len,
-                unsigned char* okm, size_t okm_len) {
+// HKDF-SHA256: derives key material from a shared secret
+static int hkdf_sha256(const unsigned char* salt, size_t salt_len,
+                       const unsigned char* ikm,  size_t ikm_len,
+                       const unsigned char* info, size_t info_len,
+                       unsigned char* okm, size_t okm_len) {
   unsigned char prk[32];
   const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
 
-  // Extract
   if (salt == NULL || salt_len == 0) {
     unsigned char zero[32] = {0};
     mbedtls_md_hmac(md, zero, 32, ikm, ikm_len, prk);
@@ -171,7 +183,6 @@ int hkdf_sha256(const unsigned char* salt, size_t salt_len,
     mbedtls_md_hmac(md, salt, salt_len, ikm, ikm_len, prk);
   }
 
-  // Expand
   unsigned char t[32];
   unsigned char counter = 1;
   size_t t_len = 0, offset = 0;
@@ -194,9 +205,11 @@ int hkdf_sha256(const unsigned char* salt, size_t salt_len,
   return 0;
 }
 
-// ── NVS key storage ──────────────────────────────────────────────────────────
+// =============================================================================
+// NVS key storage
+// =============================================================================
 
-void checkStoredKey() {
+static void checkStoredKey() {
   preferences.begin("ble-keys", true);
   if (preferences.isKey("bleKey")) {
     bleKeyHex = preferences.getString("bleKey", "");
@@ -207,7 +220,7 @@ void checkStoredKey() {
   preferences.end();
 }
 
-void saveKeyToMemory(String key) {
+static void saveKeyToMemory(const String& key) {
   preferences.begin("ble-keys", false);
   preferences.putString("bleKey", key);
   preferences.end();
@@ -216,7 +229,7 @@ void saveKeyToMemory(String key) {
   Serial.println("Key saved to NVS");
 }
 
-void clearStoredKey() {
+static void clearStoredKey() {
   preferences.begin("ble-keys", false);
   preferences.remove("bleKey");
   preferences.end();
@@ -225,10 +238,12 @@ void clearStoredKey() {
   Serial.println("Key cleared from NVS");
 }
 
-// ── WiFi ─────────────────────────────────────────────────────────────────────
+// =============================================================================
+// WiFi + server key fetch (ECDH + AES-GCM)
+// =============================================================================
 
-void connectWiFi() {
-  // Hard reset WiFi radio — needed after WDT/crash reboot
+static void connectWiFi() {
+  // Hard-reset the WiFi radio — needed after a watchdog or crash reboot
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   delay(1000);
@@ -237,8 +252,8 @@ void connectWiFi() {
   delay(500);
 
   for (int retry = 1; retry <= 3; retry++) {
-    Serial.printf("WiFi attempt %d/3: %s\n", retry, ssid);
-    WiFi.begin(ssid, password);
+    Serial.printf("WiFi attempt %d/3: %s\n", retry, WIFI_SSID);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     for (int i = 0; i < 120 && WiFi.status() != WL_CONNECTED; i++) {
       delay(500);
@@ -258,19 +273,16 @@ void connectWiFi() {
       WiFi.mode(WIFI_STA);
     }
   }
-  Serial.println("WiFi connection failed after 3 attempts");
+  Serial.println("WiFi failed after 3 attempts");
 }
 
-// ── mDNS: Tự tìm server trên mạng LAN ───────────────────────────────────────────
-
-bool discoverServer() {
+static bool discoverServer() {
   if (!MDNS.begin("anchor")) {
     Serial.println("mDNS init failed");
     return false;
   }
 
   Serial.println("mDNS: searching for smartcar server...");
-
   for (int attempt = 1; attempt <= 5; attempt++) {
     int n = MDNS.queryService("http", "tcp");
     for (int i = 0; i < n; i++) {
@@ -281,63 +293,166 @@ bool discoverServer() {
         return true;
       }
     }
-    Serial.printf("mDNS: attempt %d/5 - not found, retrying...\n", attempt);
+    Serial.printf("mDNS: attempt %d/5 - not found\n", attempt);
     delay(2000);
   }
 
   MDNS.end();
-  Serial.println("mDNS: server not found after 5 attempts");
+  Serial.println("mDNS: server not found");
   return false;
 }
 
-// ── Server: Fetch pairing key via ECDH + AES-GCM ────────────────────────────
+// Decrypts the server's ECDH + AES-GCM response and returns the pairing key hex string.
+// Returns empty string on any failure.
+static String decryptResponse(mbedtls_pk_context* client_key,
+                              const String& server_pub_b64,
+                              const String& encrypted_data_b64,
+                              const String& nonce_b64) {
+  mbedtls_ecdh_context ecdh;
+  mbedtls_pk_context   server_key;
+  mbedtls_ecdh_init(&ecdh);
+  mbedtls_pk_init(&server_key);
+  String result = "";
 
-// Khai báo trước để fetchKeyFromServer() gọi được
-String decryptResponse(mbedtls_pk_context* client_key, String server_pub_b64,
-                       String encrypted_data_b64, String nonce_b64);
+  // Decode and parse the server's public key
+  unsigned char server_pub_der[200];
+  size_t server_pub_len;
+  if (mbedtls_base64_decode(server_pub_der, sizeof(server_pub_der), &server_pub_len,
+                             (const unsigned char*)server_pub_b64.c_str(),
+                             server_pub_b64.length()) != 0) {
+    Serial.println("Decode server key failed");
+    goto cleanup;
+  }
+  if (mbedtls_pk_parse_public_key(&server_key, server_pub_der, server_pub_len) != 0) {
+    Serial.println("Parse server key failed");
+    goto cleanup;
+  }
 
-String fetchKeyFromServer() {
+  // Compute ECDH shared secret
+  if (mbedtls_ecdh_setup(&ecdh, MBEDTLS_ECP_DP_SECP256R1) != 0) {
+    Serial.println("ECDH setup failed");
+    goto cleanup;
+  }
+  if (mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(*client_key),
+                               MBEDTLS_ECDH_OURS) != 0) {
+    Serial.println("ECDH client params failed");
+    goto cleanup;
+  }
+  if (mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(server_key),
+                               MBEDTLS_ECDH_THEIRS) != 0) {
+    Serial.println("ECDH server params failed");
+    goto cleanup;
+  }
+  {
+    unsigned char shared_secret[32];
+    size_t olen;
+    if (mbedtls_ecdh_calc_secret(&ecdh, &olen, shared_secret, sizeof(shared_secret),
+                                  mbedtls_ctr_drbg_random, &ctr_drbg) != 0 || olen != 32) {
+      Serial.println("Shared secret failed");
+      goto cleanup;
+    }
+
+    // Derive 16-byte key-encryption key via HKDF
+    unsigned char kek[16];
+    const unsigned char kdf_info[] = "secure-check-kek";
+    if (hkdf_sha256(NULL, 0, shared_secret, 32, kdf_info, strlen((char*)kdf_info), kek, 16) != 0) {
+      Serial.println("HKDF failed");
+      goto cleanup;
+    }
+
+    // Decode ciphertext and nonce
+    unsigned char encrypted_data[200], nonce[12];
+    size_t encrypted_len, nonce_len;
+    if (mbedtls_base64_decode(encrypted_data, sizeof(encrypted_data), &encrypted_len,
+                               (const unsigned char*)encrypted_data_b64.c_str(),
+                               encrypted_data_b64.length()) != 0) {
+      Serial.println("Decode ciphertext failed");
+      goto cleanup;
+    }
+    if (mbedtls_base64_decode(nonce, sizeof(nonce), &nonce_len,
+                               (const unsigned char*)nonce_b64.c_str(),
+                               nonce_b64.length()) != 0 || nonce_len != 12) {
+      Serial.println("Decode nonce failed");
+      goto cleanup;
+    }
+
+    // AES-GCM decrypt (last 16 bytes of ciphertext are the authentication tag)
+    mbedtls_gcm_context gcm;
+    mbedtls_gcm_init(&gcm);
+    if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, kek, 128) != 0) {
+      Serial.println("GCM setkey failed");
+      mbedtls_gcm_free(&gcm);
+      goto cleanup;
+    }
+    size_t cipher_len = encrypted_len - 16;
+    unsigned char tag[16];
+    memcpy(tag, encrypted_data + cipher_len, 16);
+    unsigned char decrypted[200];
+    int gcm_ret = mbedtls_gcm_auth_decrypt(&gcm, cipher_len, nonce, 12,
+                                            NULL, 0, tag, 16, encrypted_data, decrypted);
+    mbedtls_gcm_free(&gcm);
+    if (gcm_ret != 0) {
+      Serial.println("Decryption failed (tag mismatch?)");
+      goto cleanup;
+    }
+    decrypted[cipher_len] = '\0';
+
+    // Parse decrypted JSON payload
+    StaticJsonDocument<512> doc;
+    if (deserializeJson(doc, (char*)decrypted)) {
+      Serial.println("JSON parse failed");
+      goto cleanup;
+    }
+    if (doc["paired"].as<bool>()) {
+      result = doc["pairing_key"].as<String>();
+      Serial.println("Server: PAIRED - ID=" + doc["pairing_id"].as<String>());
+    } else {
+      Serial.println("Server: NOT PAIRED - " + doc["message"].as<String>());
+    }
+  }
+
+cleanup:
+  mbedtls_ecdh_free(&ecdh);
+  mbedtls_pk_free(&server_key);
+  return result;
+}
+
+static String fetchKeyFromServer() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected");
     return "";
   }
 
-  // Tạo ephemeral EC key pair
+  // Generate an ephemeral EC key pair for ECDH
   mbedtls_pk_context client_key;
   mbedtls_pk_init(&client_key);
-
-  int ret = mbedtls_pk_setup(&client_key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
-  if (ret != 0) { Serial.printf("Key setup failed: %d\n", ret); return ""; }
-
-  ret = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(client_key),
-                             mbedtls_ctr_drbg_random, &ctr_drbg);
-  if (ret != 0) {
-    Serial.printf("Key gen failed: %d\n", ret);
+  if (mbedtls_pk_setup(&client_key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0 ||
+      mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(client_key),
+                           mbedtls_ctr_drbg_random, &ctr_drbg) != 0) {
+    Serial.println("EC key generation failed");
     mbedtls_pk_free(&client_key);
     return "";
   }
 
-  // Export public key → Base64
+  // Export public key as DER then Base64
   unsigned char pub_der[200];
   int pub_len = mbedtls_pk_write_pubkey_der(&client_key, pub_der, sizeof(pub_der));
   if (pub_len < 0) {
-    Serial.printf("Export failed: %d\n", pub_len);
+    Serial.println("Export public key failed");
     mbedtls_pk_free(&client_key);
     return "";
   }
-
   size_t olen;
   unsigned char pub_b64[300];
-  ret = mbedtls_base64_encode(pub_b64, sizeof(pub_b64), &olen,
-                               pub_der + sizeof(pub_der) - pub_len, pub_len);
-  if (ret != 0) {
-    Serial.printf("Base64 failed: %d\n", ret);
+  if (mbedtls_base64_encode(pub_b64, sizeof(pub_b64), &olen,
+                             pub_der + sizeof(pub_der) - pub_len, pub_len) != 0) {
+    Serial.println("Base64 encode failed");
     mbedtls_pk_free(&client_key);
     return "";
   }
   pub_b64[olen] = '\0';
 
-  // HTTP POST
+  // POST to server
   HTTPClient http;
   String url = String(serverBaseUrl) + "/secure-check-pairing";
   http.begin(url);
@@ -345,7 +460,7 @@ String fetchKeyFromServer() {
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<512> reqDoc;
-  reqDoc["vehicle_id"] = vehicleId;
+  reqDoc["vehicle_id"]           = VEHICLE_ID;
   reqDoc["client_public_key_b64"] = String((char*)pub_b64);
   String reqBody;
   serializeJson(reqDoc, reqBody);
@@ -356,7 +471,7 @@ String fetchKeyFromServer() {
 
   if (httpCode == 200) {
     StaticJsonDocument<1024> respDoc;
-    if (!deserializeJson(respDoc, http.getString())) {
+    if (deserializeJson(respDoc, http.getString()) == DeserializationError::Ok) {
       key = decryptResponse(&client_key,
                             respDoc["server_public_key_b64"].as<String>(),
                             respDoc["encrypted_data_b64"].as<String>(),
@@ -372,116 +487,16 @@ String fetchKeyFromServer() {
   mbedtls_pk_free(&client_key);
   return key;
 }
-// Macro giúp thoát sạch với cleanup ECDH + server_key
-#define ECDH_CLEANUP(msg) do { \
-  Serial.println(msg); \
-  mbedtls_ecdh_free(&ecdh); \
-  mbedtls_pk_free(&server_key); \
-  return ""; \
-} while(0)
 
-String decryptResponse(mbedtls_pk_context* client_key, String server_pub_b64,
-                       String encrypted_data_b64, String nonce_b64) {
-  // Decode + parse server public key
-  unsigned char server_pub_der[200];
-  size_t server_pub_len;
-  if (mbedtls_base64_decode(server_pub_der, sizeof(server_pub_der), &server_pub_len,
-                             (const unsigned char*)server_pub_b64.c_str(),
-                             server_pub_b64.length()) != 0) {
-    Serial.println("Decode server key failed"); return "";
-  }
+// =============================================================================
+// CAN helpers
+// =============================================================================
 
-  mbedtls_pk_context server_key;
-  mbedtls_pk_init(&server_key);
-  if (mbedtls_pk_parse_public_key(&server_key, server_pub_der, server_pub_len) != 0) {
-    Serial.println("Parse server key failed");
-    mbedtls_pk_free(&server_key); return "";
-  }
-
-  // ECDH shared secret
-  mbedtls_ecdh_context ecdh;
-  mbedtls_ecdh_init(&ecdh);
-
-  if (mbedtls_ecdh_setup(&ecdh, MBEDTLS_ECP_DP_SECP256R1) != 0)
-    ECDH_CLEANUP("ECDH setup failed");
-  if (mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(*client_key), MBEDTLS_ECDH_OURS) != 0)
-    ECDH_CLEANUP("ECDH client params failed");
-  if (mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(server_key), MBEDTLS_ECDH_THEIRS) != 0)
-    ECDH_CLEANUP("ECDH server params failed");
-
-  unsigned char shared_secret[32];
-  size_t olen;
-  if (mbedtls_ecdh_calc_secret(&ecdh, &olen, shared_secret, sizeof(shared_secret),
-                                mbedtls_ctr_drbg_random, &ctr_drbg) != 0 || olen != 32)
-    ECDH_CLEANUP("Shared secret failed");
-
-  // Derive KEK từ shared secret
-  unsigned char kek[16];
-  const unsigned char kdf_info[] = "secure-check-kek";
-  if (hkdf_sha256(NULL, 0, shared_secret, 32, kdf_info, strlen((char*)kdf_info), kek, 16) != 0)
-    ECDH_CLEANUP("HKDF failed");
-
-  // Decode ciphertext + nonce
-  unsigned char encrypted_data[200], nonce[12];
-  size_t encrypted_len, nonce_len;
-  if (mbedtls_base64_decode(encrypted_data, sizeof(encrypted_data), &encrypted_len,
-                             (const unsigned char*)encrypted_data_b64.c_str(),
-                             encrypted_data_b64.length()) != 0)
-    ECDH_CLEANUP("Decode ciphertext failed");
-
-  if (mbedtls_base64_decode(nonce, sizeof(nonce), &nonce_len,
-                             (const unsigned char*)nonce_b64.c_str(),
-                             nonce_b64.length()) != 0 || nonce_len != 12)
-    ECDH_CLEANUP("Decode nonce failed");
-
-  // AES-GCM decrypt
-  unsigned char decrypted[200];
-  mbedtls_gcm_context gcm;
-  mbedtls_gcm_init(&gcm);
-
-  if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, kek, 128) != 0) {
-    Serial.println("GCM setkey failed");
-    mbedtls_gcm_free(&gcm);
-    ECDH_CLEANUP("");
-  }
-
-  size_t cipher_len = encrypted_len - 16;
-  unsigned char tag[16];
-  memcpy(tag, encrypted_data + cipher_len, 16);
-
-  int gcm_ret = mbedtls_gcm_auth_decrypt(&gcm, cipher_len, nonce, 12,
-                                          NULL, 0, tag, 16, encrypted_data, decrypted);
-  mbedtls_gcm_free(&gcm);
-
-  if (gcm_ret != 0) ECDH_CLEANUP("Decryption failed (tag mismatch?)");
-
-  decrypted[cipher_len] = '\0';
-
-  // Parse JSON result
-  StaticJsonDocument<512> doc;
-  if (deserializeJson(doc, (char*)decrypted)) ECDH_CLEANUP("JSON parse failed");
-
-  String key = "";
-  if (doc["paired"].as<bool>()) {
-    key = doc["pairing_key"].as<String>();
-    Serial.println("Server: PAIRED - ID=" + doc["pairing_id"].as<String>());
-  } else {
-    Serial.println("Server: NOT PAIRED - " + doc["message"].as<String>());
-  }
-
-  mbedtls_ecdh_free(&ecdh);
-  mbedtls_pk_free(&server_key);
-  return key;
-}
-
-// ── BLE Callbacks ────────────────────────────────────────────────────────────
-
-// Helper: khóa/mở khóa xe qua CAN (chỉ log khi thực sự chuyển trạng thái)
 static void canLock() {
   if (!carUnlocked) return;
   if (pCanControl && pCanControl->lockCar()) {
     carUnlocked = false;
-    Serial.println(">> Xe da KHOA");
+    Serial.println(">> Car LOCKED");
   }
 }
 
@@ -489,79 +504,68 @@ static void canUnlock() {
   if (carUnlocked) return;
   if (pCanControl && pCanControl->unlockCar()) {
     carUnlocked = true;
-    Serial.println(">> Xe da MO KHOA");
+    Serial.println(">> Car UNLOCKED");
   }
 }
 
-// AuthCharacteristicCallbacks: nhận HMAC response từ Tag
-class AuthCharacteristicCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* pChar) {
-    String val = pChar->getValue();
+// =============================================================================
+// BLE callbacks
+// =============================================================================
 
-    // Tích lũy vào buffer (response có thể đến nhiều chunk)
+// Receives the HMAC-SHA256 response from the Tag (32 bytes, may arrive in chunks)
+class AuthCharacteristicCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* pChar) override {
+    String val = pChar->getValue();
     for (size_t i = 0; i < val.length() && responseBufferLen < 32; i++) {
       responseBuffer[responseBufferLen++] = (uint8_t)val[i];
     }
-
-    if (responseBufferLen < 32) return; // Chưa đủ, đợi chunk tiếp
-
-    // Đủ 32 byte — defer xác thực sang loop() trên Core 1
-    // (tránh gọi HMAC trên Core 0 BLE stack với stack nhỏ)
-    pendingAuthVerify = true;
+    if (responseBufferLen >= 32) {
+      // Defer HMAC verification to loop() on Core 1 (BLE stack runs on Core 0
+      // with a small stack — not safe for crypto operations there)
+      pendingAuthVerify = true;
+    }
   }
 };
 
-// CharacteristicCallbacks: nhận lệnh từ Tag
-// Chỉ set deferred flags khi trạng thái thực sự cần thay đổi → tránh spam serial + thao tác thừa
+// Receives commands from the Tag over the data characteristic
 class CharacteristicCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* pChar) {
+  void onWrite(BLECharacteristic* pChar) override {
     if (!pChar) return;
     String value = pChar->getValue();
     if (value.length() == 0) return;
 
     if (value.startsWith("VERIFIED:")) {
-      // ≤ 3m → mở khóa (chỉ khi đang khóa)
+      // Tag is within 3 m — unlock (only if currently locked)
       if (!carUnlocked) {
-        Serial.println("UWB: " + value.substring(9) + " -> Mo khoa");
+        Serial.println("UWB: " + value.substring(9) + " -> Unlock");
         pendingUnlock = true;
       }
-
     } else if (value.startsWith("WARNING:")) {
-      // > 3m, < 20m → khóa (chỉ khi đang mở)
+      // Tag is 3–20 m — lock (only if currently unlocked)
       if (carUnlocked) {
-        Serial.println("UWB: " + value.substring(8) + " -> Khoa");
+        Serial.println("UWB: " + value.substring(8) + " -> Lock");
         pendingLock = true;
       }
-
     } else if (value.startsWith("LOCK_CAR")) {
       if (carUnlocked) pendingLock = true;
-
     } else if (value.startsWith("UWB_STOP")) {
-      // > 20m → khóa + tắt UWB
+      // Tag moved beyond 20 m — lock and stop UWB
       if (carUnlocked) pendingLock = true;
       pendingUwbDeinit = true;
-      Serial.println("UWB: Tag ngoai 20m, dung UWB");
-
+      Serial.println("UWB: Tag beyond 20 m, stopping UWB");
     } else if (value.startsWith("TAG_UWB_READY")) {
-      // Tag trong 20m, sẵn sàng UWB
+      // Tag is back within 20 m and ready to range
       if (!authenticated) return;
-      if (!uwbInitialized) {
-        pendingUwbInit = true;
-        pendingUwbActiveNotify = true;
-      } else {
-        pendingUwbActiveNotify = true;
-      }
-
+      if (!uwbInitialized) pendingUwbInit = true;
+      pendingUwbActiveNotify = true;
     } else if (value.startsWith("ALERT:RELAY_ATTACK")) {
-      Serial.println("SECURITY: Relay attack detected!");
+      Serial.println("SECURITY ALERT: Relay attack detected!");
     }
   }
 };
 
-// MyServerCallbacks: kết nối / ngắt kết nối BLE
 class MyServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer* pServer) {
-    (void)pServer;
+  void onConnect(BLEServer* pServer) override {
     deviceConnected   = true;
     authenticated     = false;
     responseBufferLen = 0;
@@ -570,42 +574,43 @@ class MyServerCallbacks : public BLEServerCallbacks {
     Serial.println("BLE: Tag connected");
   }
 
-  void onDisconnect(BLEServer* pServer) {
-    (void)pServer;
+  void onDisconnect(BLEServer* pServer) override {
     deviceConnected   = false;
     authenticated     = false;
     responseBufferLen = 0;
     challengePending  = false;
     memset(currentChallenge, 0, sizeof(currentChallenge));
-
-    // Defer SPI operations to loop() on Core 1 (BLE callback runs on Core 0)
+    // Defer SPI operations to loop() — BLE callbacks run on Core 0
     pendingUwbDeinit = true;
     pendingLock      = true;
-
     Serial.println("BLE: Tag disconnected");
-    // Không gọi startAdvertising() ở đây — gọi từ BLE task có thể gây crash.
-    // loop() xử lý việc này an toàn qua cờ prevConnected.
+    // Do NOT call startAdvertising() here; loop() handles it safely via prevConnected flag
   }
 };
 
-// ── BLE Server init ───────────────────────────────────────────────────────────
+// =============================================================================
+// BLE server init
+// =============================================================================
 
-void startBLE() {
+static void startBLE() {
   hexStringToBytes(bleKeyHex.c_str(), pairingKey, 16);
+  printHex("Pairing key: ", pairingKey, 16);
 
   BLEDevice::init(DEVICE_NAME);
-  BLEDevice::setPower(ESP_PWR_LVL_P9);  // Max TX power (+9 dBm) for longer range
+  BLEDevice::setPower(ESP_PWR_LVL_P9);
   BLEServer* pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
   BLEService* pService = pServer->createService(SERVICE_UUID);
 
   pChallengeCharacteristic = pService->createCharacteristic(
-    CHALLENGE_CHAR_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    CHALLENGE_CHAR_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
   pChallengeCharacteristic->addDescriptor(new BLE2902());
 
   pAuthCharacteristic = pService->createCharacteristic(
-    AUTH_CHAR_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
+    AUTH_CHAR_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
   pAuthCharacteristic->setCallbacks(new AuthCharacteristicCallbacks());
   pAuthCharacteristic->addDescriptor(new BLE2902());
 
@@ -621,53 +626,46 @@ void startBLE() {
   BLEAdvertising* pAdv = BLEDevice::getAdvertising();
   pAdv->addServiceUUID(SERVICE_UUID);
   pAdv->setScanResponse(true);
-  pAdv->setMinPreferred(0x06);  // 7.5ms min connection interval
-  pAdv->setMaxPreferred(0x12);  // 22.5ms max connection interval
+  pAdv->setMinPreferred(0x06); // 7.5 ms min connection interval
+  pAdv->setMaxPreferred(0x12); // 22.5 ms max connection interval
   BLEDevice::startAdvertising();
 
-  Serial.println("BLE started - Advertising as: " + String(DEVICE_NAME));
+  Serial.println("BLE advertising as: " + String(DEVICE_NAME));
 }
 
-// ── Main flow: load key → start BLE ──────────────────────────────────────────
-
-void executeMainFlow() {
+// Loads the pairing key (NVS first; WiFi + server if missing) then starts BLE
+static void executeMainFlow() {
   checkStoredKey();
 
   if (hasKey) {
     Serial.println("Key found in NVS: " + bleKeyHex);
   } else {
-    Serial.println("No key in NVS, need WiFi to fetch from server...");
-
-    // Chỉ bật WiFi khi thực sự cần lấy key — tránh xung đột SPI/RF khi không cần thiết
+    Serial.println("No key in NVS — fetching from server via WiFi...");
     connectWiFi();
 
     if (WiFi.status() == WL_CONNECTED) {
-      if (serverBaseUrl.length() == 0 || serverBaseUrl == "") {
-        discoverServer();
-      }
+      if (serverBaseUrl.isEmpty()) discoverServer();
       String serverKey = fetchKeyFromServer();
       if (serverKey.length() > 0) {
         saveKeyToMemory(serverKey);
       } else {
-        Serial.println("Failed to get key. Please pair vehicle first, then restart.");
+        Serial.println("Failed to get key. Pair the vehicle first, then restart.");
       }
     } else {
-      Serial.println("WiFi failed - cannot fetch key. Restart and try again.");
+      Serial.println("WiFi failed — cannot fetch key. Restart and try again.");
     }
 
-    // Tắt WiFi ngay sau khi dùng xong — WiFi và BLE dùng chung radio 2.4GHz
+    // Turn off WiFi immediately — WiFi and BLE share the 2.4 GHz radio
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(100);
 
     if (!hasKey) {
-      Serial.println("\n=== Khong lay duoc key qua WiFi ===");
-      Serial.println("Dung lenh Serial de nhap key thu cong:");
-      Serial.println("  SETKEY <32-hex-chars>");
-      Serial.println("  Vi du: SETKEY e9b8da4e60206bd04bd554c6a94e4e0e");
-      Serial.println("  (Lay key tu server hoac tu thiet bi da pair)");
-      Serial.println("  Hoac dung lenh WIFI de thu lai ket noi WiFi");
-      Serial.println("======================================\n");
+      Serial.println("\n=== No key available ===");
+      Serial.println("Enter key manually via serial:");
+      Serial.println("  SETKEY <32 hex chars>");
+      Serial.println("  Example: SETKEY e9b8da4e60206bd04bd554c6a94e4e0e");
+      Serial.println("========================\n");
       return;
     }
   }
@@ -676,22 +674,24 @@ void executeMainFlow() {
   bleStarted = true;
 }
 
-// ── UWB Init / Deinit ─────────────────────────────────────────────────────────
+// =============================================================================
+// UWB init / deinit
+// =============================================================================
 
-bool initUWB(void) {
+static bool initUWB() {
   if (uwbInitialized) return true;
-
   Serial.println("UWB: initializing...");
 
-  // Deselect CAN CS to free SPI bus for DW3000
+  // Deselect CAN CS so DW3000 has the SPI bus to itself
   digitalWrite(CAN_CS, HIGH);
 
-  // Set up SPI peripheral (stores _irq, _rst, calls SPI.begin())
+  // Configure SPI peripheral (stores _irq and _rst, calls SPI.begin())
   spiBegin(PIN_IRQ, PIN_RST);
 
-  // Set DW3000 CS pin only — DO NOT call spiSelect() which writes
-  // DW1000-era register commands to the DW3000 (wrong SPI protocol,
-  // wrong register addresses) and can corrupt chip state.
+  // Set DW3000 CS pin directly.
+  // NOTE: Do NOT call spiSelect() here — that function was written for the DW1000
+  // and writes commands that are incompatible with the DW3000 SPI protocol, which
+  // would corrupt chip state. Setting _ss directly is the correct workaround.
   {
     extern uint8_t _ss;
     _ss = PIN_SS;
@@ -699,30 +699,25 @@ bool initUWB(void) {
   pinMode(PIN_SS, OUTPUT);
   digitalWrite(PIN_SS, HIGH);
 
-  // Hardware reset DW3000: drive RST LOW then float
-  // (DW3000 spec: RST should not be driven HIGH, only floated)
+  // Hardware reset: drive RST low then float (DW3000 spec: never drive RST high)
   pinMode(PIN_RST, OUTPUT);
   digitalWrite(PIN_RST, LOW);
   delay(2);
   pinMode(PIN_RST, INPUT);
-  delay(50); // DW3000 cần thời gian ổn định thạch anh sau reset
+  delay(50); // allow crystal to stabilise
 
-  // Chờ DW3000 vào IDLE_RC (retry tối đa 500ms, tránh while(1) gây WDT reset)
+  // Wait for IDLE_RC state (500 ms max to avoid triggering the watchdog)
   int retries = 500;
-  while (!dwt_checkidlerc() && retries > 0) {
-    delay(1);
-    retries--;
-  }
-  if (retries == 0) {
-    Serial.println("UWB: IDLE_RC failed - aborting (not halting)");
-    // Giữ DW3000 trong reset để không chiếm SPI bus
+  while (!dwt_checkidlerc() && retries-- > 0) delay(1);
+  if (retries <= 0) {
+    Serial.println("UWB: IDLE_RC timeout — aborting");
     pinMode(PIN_RST, OUTPUT);
     digitalWrite(PIN_RST, LOW);
     return false;
   }
 
   if (dwt_initialise(DWT_DW_INIT) == DWT_ERROR) {
-    Serial.println("UWB: init failed - aborting");
+    Serial.println("UWB: initialise failed");
     pinMode(PIN_RST, OUTPUT);
     digitalWrite(PIN_RST, LOW);
     return false;
@@ -731,7 +726,7 @@ bool initUWB(void) {
   dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
 
   if (dwt_configure(&uwbConfig) != 0) {
-    Serial.println("UWB: configure failed - aborting");
+    Serial.println("UWB: configure failed");
     dwt_softreset();
     delay(2);
     pinMode(PIN_RST, OUTPUT);
@@ -742,7 +737,7 @@ bool initUWB(void) {
   dwt_configuretxrf(&txconfig_options);
   dwt_setrxantennadelay(RX_ANT_DLY);
   dwt_settxantennadelay(TX_ANT_DLY);
-  dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
+  dwt_setlnapamode(DWT_LNA_ENABLE);
 
   uwbInitialized = true;
   lastPollReceivedTime = millis();
@@ -750,71 +745,84 @@ bool initUWB(void) {
   return true;
 }
 
-void deinitUWB(void) {
+static void deinitUWB() {
   if (!uwbInitialized) return;
-  dwt_forcetrxoff();  // Stop any ongoing RX/TX before reset
+  dwt_forcetrxoff();
   dwt_softreset();
   delay(2);
-  // Hold DW3000 in reset to prevent it from driving SPI MISO
-  // and interfering with MCP2515 (CAN) on the shared SPI bus
+  // Hold DW3000 in reset so it does not drive SPI MISO and interfere with
+  // MCP2515 (CAN controller) on the shared SPI bus
   pinMode(PIN_RST, OUTPUT);
   digitalWrite(PIN_RST, LOW);
   uwbInitialized = false;
   Serial.println("UWB: stopped");
 }
 
-// ── UWB Responder loop (TWR) ──────────────────────────────────────────────────
+// =============================================================================
+// UWB responder loop (SS-TWR)
+// =============================================================================
 
-void uwbResponderLoop(void) {
-  (void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+static void uwbResponderLoop() {
+  dwt_rxenable(DWT_START_RX_IMMEDIATE);
 
-  // Chờ RX OK hoặc lỗi (timeout 50ms)
+  // Wait for a good frame or an error (100 ms timeout)
   unsigned long t0 = millis();
   while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) &
            (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_ERR))) {
-    if ((millis() - t0) > 50UL) {
+    if ((millis() - t0) > 100UL) {
       dwt_forcetrxoff();
       return;
     }
   }
 
+  // Discard RX errors — only process good frames (RXFCG)
   if (!(status_reg & SYS_STATUS_RXFCG_BIT_MASK)) {
     dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_ERR);
-    dwt_forcetrxoff();  // Đưa DW3000 về IDLE, giải phóng SPI MISO
+    dwt_forcetrxoff();
     return;
   }
 
-  // Nhận frame
+  // Read the received frame
   dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG_BIT_MASK);
   uint32_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RXFLEN_MASK;
-  if (frame_len > sizeof(rx_buffer)) return;
+  if (frame_len == 0 || frame_len > sizeof(rx_buffer)) { dwt_forcetrxoff(); return; }
 
   dwt_readrxdata(rx_buffer, frame_len, 0U);
-  rx_buffer[ALL_MSG_SN_IDX] = 0U; // Bỏ qua SN khi so sánh header
+  rx_buffer[ALL_MSG_SN_IDX] = 0U; // zero SN field before header comparison
+  if (memcmp(rx_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) != 0) { dwt_forcetrxoff(); return; }
 
-  if (memcmp(rx_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) != 0) return;
+  // Read the Poll RX RMARKER timestamp and schedule the Response.
+  // IMPORTANT: with 1024-symbol preamble at 850 kbps the preamble alone takes ~2083 µs,
+  // so POLL_RX_TO_RESP_TX_DLY_UUS must be larger than (frame_rx_time + software_time).
+  uint64_t poll_rx_ts   = get_rx_timestamp_u64();
+  uint32_t resp_tx_time = (uint32_t)((poll_rx_ts + ((uint64_t)POLL_RX_TO_RESP_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8);
 
-  // Tính thời điểm gửi response
-  uint64_t poll_rx_ts = get_rx_timestamp_u64();
-  uint32_t resp_tx_time = (uint32_t)((poll_rx_ts + (POLL_RX_TO_RESP_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8);
-  (void)dwt_setdelayedtrxtime(resp_tx_time);
+  // Force IDLE before delayed TX. After RXFCG, the DW3000 may still show RX state
+  // in SYS_STATE_LO, which causes dwt_starttx(DWT_START_TX_DELAYED) to fail.
+  // dwt_setdelayedtrxtime / DX_TIME register is not affected by forcetrxoff.
+  dwt_forcetrxoff();
+  dwt_setdelayedtrxtime(resp_tx_time);
+  uint64_t resp_tx_ts   = (((uint64_t)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
 
-  uint64_t resp_tx_ts = (((uint64_t)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
-
-  // Nhúng timestamps vào response frame
+  // Embed timestamps into the response frame
   resp_msg_set_ts(&tx_resp_msg[RESP_MSG_POLL_RX_TS_IDX], poll_rx_ts);
   resp_msg_set_ts(&tx_resp_msg[RESP_MSG_RESP_TX_TS_IDX], resp_tx_ts);
   tx_resp_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
 
   dwt_writetxdata(sizeof(tx_resp_msg), tx_resp_msg, 0U);
   dwt_writetxfctrl(sizeof(tx_resp_msg), 0U, 1);
+  if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
+    Serial.printf("UWB Anchor: TX delayed failed — sys_state=0x%08X sr=0x%08X\n",
+                  dwt_read32bitreg(SYS_STATE_LO_ID), dwt_read32bitreg(SYS_STATUS_ID));
+    dwt_forcetrxoff();
+    return;
+  }
 
-  if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) return;
-
-  // Chờ TX hoàn thành (safety timeout)
+  // Wait for TX to complete (10 ms safety timeout)
   unsigned long tx_t0 = millis();
   while (!(dwt_read32bitreg(SYS_STATUS_ID) & SYS_STATUS_TXFRS_BIT_MASK)) {
     if ((millis() - tx_t0) > 10UL) {
+      Serial.println("UWB Anchor: TX timeout");
       dwt_forcetrxoff();
       return;
     }
@@ -825,61 +833,83 @@ void uwbResponderLoop(void) {
   lastPollReceivedTime = millis();
 }
 
-// ── setup ─────────────────────────────────────────────────────────────────────
+// Prints status when it changes or every 30 s as a heartbeat
+static void printStatusIfChanged() {
+  static bool lastBle = false, lastAuth = false, lastUwb = false, lastCar = false;
+  static unsigned long lastHeartbeat = 0;
 
-void setup(void) {
+  bool ble = deviceConnected, auth = authenticated, uwb = uwbInitialized, car = carUnlocked;
+  bool changed = (ble != lastBle || auth != lastAuth || uwb != lastUwb || car != lastCar);
+
+  if (changed) {
+    Serial.printf("[%s] BLE:%s Auth:%s UWB:%s Car:%s\n",
+      changed ? "Change" : "Status",
+      ble ? "ON" : "OFF", auth ? "OK" : "NO",
+      uwb ? "ON" : "OFF", car ? "OPEN" : "LOCKED");
+    lastBle = ble; lastAuth = auth; lastUwb = uwb; lastCar = car;
+    lastHeartbeat = millis();
+  }
+}
+
+// =============================================================================
+// setup
+// =============================================================================
+
+void setup() {
   Serial.begin(115200);
   delay(1000);
 
   esp_reset_reason_t reason = esp_reset_reason();
-  Serial.printf("\nSmart Car Anchor - Vehicle ID: %s (reset: %d)\n", vehicleId, reason);
-  if (reason == ESP_RST_PANIC)   Serial.println("WARNING: Last reset was CRASH!");
+  Serial.printf("\nSmart Car Anchor - Vehicle: %s (reset reason: %d)\n", VEHICLE_ID, reason);
+  if (reason == ESP_RST_PANIC)
+    Serial.println("WARNING: previous reset was a CRASH");
   if (reason == ESP_RST_WDT || reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT)
-    Serial.println("WARNING: Last reset was WATCHDOG!");
+    Serial.println("WARNING: previous reset was a WATCHDOG");
 
-  // Giữ DWM3000 trong reset trong khi WiFi init để tiết kiệm dòng trên rail 3.3V
-  // (WiFi peak ~300mA, DWM3000 bình thường ~30-50mA)
+  // Hold DW3000 in reset during WiFi init to reduce current on the 3.3 V rail
+  // (WiFi peaks ~300 mA; DW3000 normal operation ~30–50 mA)
   pinMode(PIN_RST, OUTPUT); digitalWrite(PIN_RST, LOW);
   pinMode(PIN_SS,  OUTPUT); digitalWrite(PIN_SS,  HIGH);
   pinMode(CAN_CS,  OUTPUT); digitalWrite(CAN_CS,  HIGH);
   delay(100);
 
-  // Init mbedTLS CSPRNG
+  // Seed the mbedTLS CSPRNG
   mbedtls_entropy_init(&entropy);
   mbedtls_ctr_drbg_init(&ctr_drbg);
   const char* pers = "anchor_secure";
   if (mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
                               (const unsigned char*)pers, strlen(pers)) != 0) {
-    Serial.println("mbedtls init failed");
+    Serial.println("mbedTLS init failed — halting");
     return;
   }
 
-  // executeMainFlow() trước CAN — WiFi cần chạy khi SPI bus chưa active
-  // (MCP2515 constructor gọi SPI.begin(), gây nhiễu WiFi trên board)
+  // Load key and start BLE (WiFi is used inside if key is absent, then turned off)
   executeMainFlow();
 
-  // Đảm bảo WiFi đã tắt (executeMainFlow tắt nếu bật, nhưng phòng trường hợp key có sẵn)
+  // Ensure WiFi is off — it shares the radio with BLE
   if (WiFi.getMode() != WIFI_OFF) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(100);
   }
-  Serial.println("WiFi disabled - BLE only mode");
+  Serial.println("WiFi disabled — BLE-only mode");
 
-  // Init CAN Bus SAU WiFi — tránh SPI bus conflict khi kết nối WiFi
-  pMcp2515  = new MCP2515(CAN_CS);
+  // Init CAN after WiFi is off to avoid SPI bus conflicts
+  pMcp2515   = new MCP2515(CAN_CS);
   pCanControl = new CANCommands(pMcp2515);
   if (!pCanControl->initialize(CAN_CS, CAN_100KBPS, MCP_CLOCK)) {
-    Serial.println("CAN: init failed, continuing with BLE+UWB only");
+    Serial.println("CAN: init failed — continuing with BLE + UWB only");
   }
 }
 
-// ── loop ──────────────────────────────────────────────────────────────────────
+// =============================================================================
+// loop
+// =============================================================================
 
-void loop(void) {
+void loop() {
   bool uwbJustInitialized = false;
 
-  // ── Xử lý auth verify trên Core 1 (stack đủ lớn cho HMAC) ───────────────
+  // 1. Verify HMAC auth response on Core 1 (safe stack size for crypto)
   if (pendingAuthVerify) {
     pendingAuthVerify = false;
 
@@ -889,33 +919,25 @@ void loop(void) {
 
     uint8_t expected[32];
     if (!computeHMAC(pairingKey, 16, currentChallenge, 16, expected)) {
-      Serial.println("HMAC compute failed");
+      Serial.println("HMAC compute failed — disconnecting");
       BLEDevice::getServer()->disconnect(BLEDevice::getServer()->getConnId());
+    } else if (memcmp(received, expected, 32) == 0) {
+      authenticated = true;
+      Serial.println("Auth OK");
+      pAuthCharacteristic->setValue("AUTH_OK");
+      pAuthCharacteristic->notify();
     } else {
-      bool match = (memcmp(received, expected, 32) == 0);
-      authenticated = match;
-
-      if (match) {
-        Serial.println("Auth OK - Tag duoc xac thuc");
-        pAuthCharacteristic->setValue("AUTH_OK");
-        pAuthCharacteristic->notify();
-      } else {
-        Serial.println("Auth FAIL - Sai key, ngat ket noi");
-        pAuthCharacteristic->setValue("AUTH_FAIL");
-        pAuthCharacteristic->notify();
-        delay(100);
-        BLEDevice::getServer()->disconnect(BLEDevice::getServer()->getConnId());
-      }
+      Serial.println("Auth FAIL — wrong key, disconnecting");
+      pAuthCharacteristic->setValue("AUTH_FAIL");
+      pAuthCharacteristic->notify();
+      BLEDevice::getServer()->disconnect(BLEDevice::getServer()->getConnId());
     }
   }
 
-  // ── Serial commands ──────────────────────────────────────────────────────
-  handleSerialCommands();
-
-  // ── BLE connection edge detection ────────────────────────────────────────
+  // 2. Track connection state edge (rising edge only — onDisconnect handles falling)
   if (deviceConnected && !prevConnected) prevConnected = true;
 
-  // Gửi challenge sau khi Tag subscribe
+  // 4. Send challenge after Tag has had time to subscribe to notifications
   if (deviceConnected && challengePending &&
       (millis() - connectionTime) >= CHALLENGE_SEND_DELAY_MS) {
     challengePending = false;
@@ -925,17 +947,21 @@ void loop(void) {
     Serial.println("Challenge sent to Tag");
   }
 
-  // ── Deferred SPI actions (BLE Core 0 → loop Core 1) ─────────────────────
-  if (pendingUwbDeinit) { pendingUwbDeinit = false; deinitUWB(); }
+  // 5. Execute deferred SPI actions (BLE Core 0 → loop Core 1)
+  if (pendingUwbDeinit) {
+    pendingUwbDeinit = false;
+    deinitUWB();
+  }
   if (pendingUwbInit && authenticated) {
     pendingUwbInit = false;
     if (initUWB()) uwbJustInitialized = true;
   }
-  // Tạm dừng UWB trước khi gửi CAN — DW3000 và MCP2515 chia sẻ SPI bus.
-  // Nếu không forcetrxoff(), DW3000 có thể drive MISO gây lỗi CAN (ERROR_ALLTXBUSY).
+  // Pause DW3000 before CAN commands — both share the SPI bus.
+  // Without forcetrxoff(), DW3000 can drive MISO during a CAN transfer,
+  // causing ERROR_ALLTXBUSY on the MCP2515.
   if ((pendingLock || pendingUnlock) && uwbInitialized) {
     dwt_forcetrxoff();
-    digitalWrite(PIN_SS, HIGH); // Đảm bảo DW3000 CS deselect
+    digitalWrite(PIN_SS, HIGH);
   }
   if (pendingLock)   { pendingLock   = false; canLock();   }
   if (pendingUnlock) { pendingUnlock = false; canUnlock(); }
@@ -945,111 +971,25 @@ void loop(void) {
     pCharacteristic->notify();
   }
 
-  // ── Restart advertising sau khi ngắt kết nối ────────────────────────────
+  // 6. Restart advertising after a disconnect
   if (!deviceConnected && prevConnected) {
     prevConnected = false;
-    delay(300);
+    delay(50);
     BLEDevice::startAdvertising();
     Serial.println("BLE: advertising restarted");
   }
 
-  // ── Safety net: re-advertising nếu không có kết nối trong 10s ───────────
-  // ESP32-S3 BLE stack có thể tự dừng advertising sau disconnect
+  // 7. Safety net: re-trigger advertising if disconnected for > 10 s
+  //    (ESP32-S3 BLE stack can silently stop advertising after a disconnect)
   static unsigned long lastAdvRefresh = 0;
   if (!deviceConnected && (millis() - lastAdvRefresh > 10000)) {
     lastAdvRefresh = millis();
     BLEDevice::startAdvertising();
   }
 
-  // ── UWB ranging (skip first cycle sau init để hardware ổn định) ──────────
+  // 8. UWB ranging (skip the first cycle after init to let the hardware settle)
   if (uwbInitialized && !uwbJustInitialized) uwbResponderLoop();
 
-  // ── Status log: chỉ in khi có thay đổi hoặc mỗi 30s heartbeat ──────────
+  // 9. Periodic status log
   printStatusIfChanged();
-
-  delay(10);
-}
-
-// ── Serial command handler (tách ra cho gọn loop) ─────────────────────────
-
-void handleSerialCommands() {
-  if (!Serial.available()) return;
-
-  String cmd = Serial.readStringUntil('\n');
-  cmd.trim();
-  cmd.toUpperCase();
-
-  if (cmd == "CLEAR") {
-    clearStoredKey();
-    Serial.println("Key cleared. Restart ESP32.");
-
-  } else if (cmd.startsWith("SETKEY ")) {
-    Serial.readString(); // flush
-    String keyHex = cmd.substring(7);
-    keyHex.trim();
-    if (keyHex.length() != 32) {
-      Serial.printf("ERROR: Can 32 ky tu hex (hien tai: %d)\n", keyHex.length());
-      return;
-    }
-    bool valid = true;
-    for (size_t i = 0; i < keyHex.length(); i++) {
-      if (!isxdigit(keyHex.charAt(i))) { valid = false; break; }
-    }
-    if (!valid) {
-      Serial.println("ERROR: Chi dung 0-9, a-f, A-F");
-      return;
-    }
-    saveKeyToMemory(keyHex);
-    Serial.println("Key saved: " + keyHex);
-    if (!bleStarted) { startBLE(); bleStarted = true; }
-
-  } else if (cmd == "WIFI") {
-    if (hasKey) {
-      Serial.println("Da co key. Dung CLEAR truoc.");
-      return;
-    }
-    connectWiFi();
-    if (WiFi.status() == WL_CONNECTED) {
-      if (serverBaseUrl.length() == 0) discoverServer();
-      String k = fetchKeyFromServer();
-      if (k.length() > 0) {
-        saveKeyToMemory(k);
-        if (!bleStarted) { startBLE(); bleStarted = true; }
-      }
-    }
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-    delay(100);
-
-  } else if (cmd == "STATUS") {
-    Serial.printf("Key:%s BLE:%s Auth:%s UWB:%s Car:%s\n",
-      hasKey ? "Y" : "N", deviceConnected ? "Y" : "N",
-      authenticated ? "Y" : "N", uwbInitialized ? "Y" : "N",
-      carUnlocked ? "UNLOCKED" : "LOCKED");
-
-  } else if (cmd == "SHOW") {
-    Serial.println(hasKey ? "Key: " + bleKeyHex : "No key stored");
-
-  } else if (cmd == "HELP") {
-    Serial.println("Commands: SETKEY <hex32>, WIFI, SHOW, STATUS, CLEAR, HELP");
-  }
-}
-
-// ── Status: chỉ in khi trạng thái thay đổi hoặc heartbeat 30s ────────────
-
-void printStatusIfChanged() {
-  static bool lastBle = false, lastAuth = false, lastUwb = false, lastCar = false;
-  static unsigned long lastHeartbeat = 0;
-
-  bool ble = deviceConnected, auth = authenticated, uwb = uwbInitialized, car = carUnlocked;
-  bool changed = (ble != lastBle || auth != lastAuth || uwb != lastUwb || car != lastCar);
-
-  if (changed || (millis() - lastHeartbeat > 30000)) {
-    Serial.printf("[%s] BLE:%s Auth:%s UWB:%s Car:%s\n",
-      changed ? "Change" : "Status",
-      ble ? "ON" : "OFF", auth ? "OK" : "NO",
-      uwb ? "ON" : "OFF", car ? "OPEN" : "LOCKED");
-    lastBle = ble; lastAuth = auth; lastUwb = uwb; lastCar = car;
-    lastHeartbeat = millis();
-  }
 }

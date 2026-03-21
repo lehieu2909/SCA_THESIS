@@ -36,7 +36,7 @@ bool useCorrectKey = true;
 #define UWB_LOCK_DISTANCE_M      (3.5)   // > 3.5m → khóa (khoảng chết 0.5m tránh nhấp nháy)
 #define UWB_FAR_DISTANCE_M       (10.0)  // > 10m → tắt UWB
 #define RSSI_THRESHOLD_DBM       (-80)   // ~10m BLE, dùng để restart UWB sau khi ra xa
-#define RSSI_CONNECT_MIN_DBM     (-95)   // RSSI tối thiểu để thử kết nối (~12-13m)
+#define RSSI_CONNECT_MIN_DBM     (-100)   // RSSI tối thiểu để thử kết nối (~12-13m)
 #define RSSI_CHECK_INTERVAL_MS   (1000U) // Check RSSI mỗi 1s khi chờ restart UWB
 #define UWB_REQUEST_RETRY_MS     (5000U) // Retry TAG_UWB_READY sau 5s nếu Anchor chưa phản hồi
 
@@ -638,4 +638,3 @@ void loop(void) {
 
   delay(10);
 }
-
