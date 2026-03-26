@@ -3,9 +3,9 @@
 #define APP_NAME "SS TWR RESP STS v1.0"
 
 // connection pins
-const uint8_t PIN_RST = 27; // reset pin
-const uint8_t PIN_IRQ = 34; // irq pin
-const uint8_t PIN_SS = 4; // spi select pin
+const uint8_t PIN_RST = 5; // reset pin
+const uint8_t PIN_IRQ = 4; // irq pin
+const uint8_t PIN_SS = 10; // spi select pin
 
 /* Inter-ranging delay period, in milliseconds. */
 #define RNG_DELAY_MS 1000

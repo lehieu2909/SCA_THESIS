@@ -34,10 +34,10 @@
 // =============================================================================
 // USER CONFIGURATION — edit before flashing
 // =============================================================================
-const char* WIFI_SSID       = "Student";
-const char* WIFI_PASSWORD   = "";
+const char* WIFI_SSID       = "nubia Neo 2";
+const char* WIFI_PASSWORD   = "29092004";
 const char* VEHICLE_ID      = "1HGBH41JXMN109186";
-static String serverBaseUrl = "http://10.0.4.32:8000"; // fallback; overridden by mDNS
+static String serverBaseUrl = "http://10.34.20.66:8000"; // fallback; overridden by mDNS
 // =============================================================================
 
 // ── BLE ──────────────────────────────────────────────────────────────────────
@@ -493,11 +493,10 @@ static String fetchKeyFromServer() {
 // =============================================================================
 
 static void canLock() {
-  if (!carUnlocked) return;
-  if (pCanControl && pCanControl->lockCar()) {
-    carUnlocked = false;
-    Serial.println(">> Car LOCKED");
-  }
+  if (!pCanControl) return;
+  pCanControl->lockCar();
+  carUnlocked = false;
+  Serial.println(">> Car LOCKED");
 }
 
 static void canUnlock() {

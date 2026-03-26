@@ -4,7 +4,16 @@
       "Bash(find /d/SCA/Src -type f -name *.cpp -o -name *.h)",
       "Bash(find /d/SCA/lib/Dw3000/src -type f -name *.h -o -name *.cpp)",
       "Bash(git:*)",
-      "Bash(find D:/SCA/lib/ -name *.c -o -name *.cpp -o -name *.h)"
+      "Bash(find D:/SCA/lib/ -name *.c -o -name *.cpp -o -name *.h)",
+      "Bash(arduino-cli compile:*)",
+      "Bash(where arduino-cli:*)",
+      "Read(//mnt/c/Users/Hieu Le/AppData/Local/**)",
+      "Bash(cmd.exe /c \"where arduino-cli 2>nul && arduino-cli version\")",
+      "Bash(cmd.exe /c \"arduino-cli compile --fqbn esp32:esp32:esp32s3 D:\\\\SCA\\\\Src\\\\testFreeRTOS\\\\FreeRTOS_Anchor 2>&1\")",
+      "Bash(cmd.exe /c \"arduino-cli compile --fqbn esp32:esp32:esp32s3 D:\\\\SCA\\\\Src\\\\testFreeRTOS\\\\FreeRTOS_Anchor\")",
+      "Bash(cmd.exe /c \"arduino-cli version\")",
+      "Bash(powershell.exe -Command \"arduino-cli version\")",
+      "Bash(powershell.exe -Command \"Get-Command arduino-cli -ErrorAction SilentlyContinue; ls ''C:\\\\Users\\\\Hieu Le\\\\AppData\\\\Local\\\\Programs\\\\'' 2>$null; ls ''C:\\\\Program Files\\\\'' | Select-String -Pattern ''arduino'' -SimpleMatch -CaseSensitive:$false\")"
     ]
   }
 }
