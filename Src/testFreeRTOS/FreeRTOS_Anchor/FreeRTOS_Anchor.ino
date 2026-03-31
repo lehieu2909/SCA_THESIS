@@ -11,7 +11,6 @@
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/md.h>
-
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -264,37 +263,52 @@ static String decryptResponse(mbedtls_pk_context* client_key,
     String result = "";
     unsigned char server_pub_der[200]; size_t server_pub_len;
     if (mbedtls_base64_decode(server_pub_der, sizeof(server_pub_der), &server_pub_len,
-                              (const unsigned char*)server_pub_b64.c_str(), server_pub_b64.length()) != 0) goto cleanup;
-    if (mbedtls_pk_parse_public_key(&server_key, server_pub_der, server_pub_len) != 0) goto cleanup;
-    if (mbedtls_ecdh_setup(&ecdh, MBEDTLS_ECP_DP_SECP256R1) != 0) goto cleanup;
-    if (mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(*client_key), MBEDTLS_ECDH_OURS) != 0) goto cleanup;
-    if (mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(server_key), MBEDTLS_ECDH_THEIRS) != 0) goto cleanup;
+                              (const unsigned char*)server_pub_b64.c_str(), server_pub_b64.length()) != 0) {
+        Serial.println("[DBG] FAIL: base64 decode server pubkey"); goto cleanup; }
+    if (mbedtls_pk_parse_public_key(&server_key, server_pub_der, server_pub_len) != 0) {
+        Serial.println("[DBG] FAIL: parse server pubkey"); goto cleanup; }
+    if (mbedtls_ecdh_setup(&ecdh, MBEDTLS_ECP_DP_SECP256R1) != 0) {
+        Serial.println("[DBG] FAIL: ecdh setup"); goto cleanup; }
+    if (mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(*client_key), MBEDTLS_ECDH_OURS) != 0) {
+        Serial.println("[DBG] FAIL: ecdh params OURS"); goto cleanup; }
+    if (mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(server_key), MBEDTLS_ECDH_THEIRS) != 0) {
+        Serial.println("[DBG] FAIL: ecdh params THEIRS"); goto cleanup; }
     {
         unsigned char shared_secret[32]; size_t olen;
         if (mbedtls_ecdh_calc_secret(&ecdh, &olen, shared_secret, sizeof(shared_secret),
-                                     mbedtls_ctr_drbg_random, &ctr_drbg) != 0 || olen != 32) goto cleanup;
+                                     mbedtls_ctr_drbg_random, &ctr_drbg) != 0 || olen != 32) {
+            Serial.println("[DBG] FAIL: ecdh calc secret"); goto cleanup; }
         unsigned char kek[16];
         const unsigned char kdf_info[] = "secure-check-kek";
-        if (hkdf_sha256(NULL, 0, shared_secret, 32, kdf_info, strlen((char*)kdf_info), kek, 16) != 0) goto cleanup;
+        if (hkdf_sha256(NULL, 0, shared_secret, 32, kdf_info, strlen((char*)kdf_info), kek, 16) != 0) {
+            Serial.println("[DBG] FAIL: hkdf"); goto cleanup; }
         unsigned char encrypted_data[200], nonce[12]; size_t encrypted_len, nonce_len;
         if (mbedtls_base64_decode(encrypted_data, sizeof(encrypted_data), &encrypted_len,
-                                  (const unsigned char*)encrypted_data_b64.c_str(), encrypted_data_b64.length()) != 0) goto cleanup;
+                                  (const unsigned char*)encrypted_data_b64.c_str(), encrypted_data_b64.length()) != 0) {
+            Serial.println("[DBG] FAIL: base64 decode ciphertext"); goto cleanup; }
         if (mbedtls_base64_decode(nonce, sizeof(nonce), &nonce_len,
-                                  (const unsigned char*)nonce_b64.c_str(), nonce_b64.length()) != 0 || nonce_len != 12) goto cleanup;
+                                  (const unsigned char*)nonce_b64.c_str(), nonce_b64.length()) != 0 || nonce_len != 12) {
+            Serial.printf("[DBG] FAIL: base64 decode nonce (len=%d)\n", (int)nonce_len); goto cleanup; }
         mbedtls_gcm_context gcm; mbedtls_gcm_init(&gcm);
-        if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, kek, 128) != 0) { mbedtls_gcm_free(&gcm); goto cleanup; }
+        if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, kek, 128) != 0) {
+            Serial.println("[DBG] FAIL: gcm setkey"); mbedtls_gcm_free(&gcm); goto cleanup; }
         size_t cipher_len = encrypted_len - 16;
         unsigned char tag[16]; memcpy(tag, encrypted_data + cipher_len, 16);
         unsigned char decrypted[200];
         int gcm_ret = mbedtls_gcm_auth_decrypt(&gcm, cipher_len, nonce, 12,
                                                NULL, 0, tag, 16, encrypted_data, decrypted);
         mbedtls_gcm_free(&gcm);
-        if (gcm_ret != 0) goto cleanup;
+        if (gcm_ret != 0) {
+            Serial.printf("[DBG] FAIL: gcm decrypt (ret=%d) — wrong KEK or tampered data\n", gcm_ret); goto cleanup; }
         decrypted[cipher_len] = '\0';
+        Serial.printf("[DBG] Decrypted JSON: %s\n", (char*)decrypted);
         StaticJsonDocument<512> doc;
-        if (deserializeJson(doc, (char*)decrypted)) goto cleanup;
+        if (deserializeJson(doc, (char*)decrypted)) {
+            Serial.println("[DBG] FAIL: JSON parse"); goto cleanup; }
         if (doc["paired"].as<bool>())
             result = doc["pairing_key"].as<String>();
+        else
+            Serial.println("[DBG] paired=false: " + doc["message"].as<String>());
     }
 cleanup:
     mbedtls_ecdh_free(&ecdh); mbedtls_pk_free(&server_key);
@@ -345,6 +359,128 @@ static String fetchKeyFromServer() {
     } else {
         Serial.println("Server error: " + http.getString());
     }
+    http.end(); mbedtls_pk_free(&client_key);
+    return key;
+}
+
+// Calls POST /owner-pairing to register this vehicle and retrieve the pairing key.
+// Returns hex string of pairing key on success, empty string on failure.
+static String ownerPairing() {
+    if (WiFi.status() != WL_CONNECTED) return "";
+
+    // Generate ephemeral EC key pair
+    mbedtls_pk_context client_key; mbedtls_pk_init(&client_key);
+    if (mbedtls_pk_setup(&client_key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0 ||
+        mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(client_key),
+                            mbedtls_ctr_drbg_random, &ctr_drbg) != 0) {
+        mbedtls_pk_free(&client_key); return "";
+    }
+
+    // Encode public key as DER → base64
+    unsigned char pub_der[200];
+    int pub_len = mbedtls_pk_write_pubkey_der(&client_key, pub_der, sizeof(pub_der));
+    if (pub_len < 0) { mbedtls_pk_free(&client_key); return ""; }
+    size_t olen; unsigned char pub_b64[300];
+    if (mbedtls_base64_encode(pub_b64, sizeof(pub_b64), &olen,
+                              pub_der + sizeof(pub_der) - pub_len, pub_len) != 0) {
+        mbedtls_pk_free(&client_key); return "";
+    }
+    pub_b64[olen] = '\0';
+
+    // POST /owner-pairing
+    HTTPClient http;
+    String url = serverBaseUrl + "/owner-pairing";
+    http.begin(url); http.setTimeout(10000);
+    http.addHeader("Content-Type", "application/json");
+    StaticJsonDocument<512> reqDoc;
+    reqDoc["vehicle_id"]            = VEHICLE_ID;
+    reqDoc["vehicle_public_key_b64"] = String((char*)pub_b64);
+    String reqBody; serializeJson(reqDoc, reqBody);
+    int httpCode = http.POST(reqBody);
+    Serial.printf("[ownerPairing] HTTP code: %d\n", httpCode);
+
+    String key = "";
+    if (httpCode == 200) {
+        StaticJsonDocument<1024> respDoc;
+        String respStr = http.getString();
+        if (deserializeJson(respDoc, respStr) != DeserializationError::Ok) {
+            Serial.println("[ownerPairing] JSON parse failed");
+            http.end(); mbedtls_pk_free(&client_key); return "";
+        }
+
+        // ECDH: parse server public key
+        String server_pub_b64 = respDoc["server_public_key_b64"].as<String>();
+        String enc_key_b64    = respDoc["encrypted_pairing_key_b64"].as<String>();
+        String nonce_b64      = respDoc["nonce_b64"].as<String>();
+
+        mbedtls_ecdh_context ecdh; mbedtls_pk_context server_key;
+        mbedtls_ecdh_init(&ecdh); mbedtls_pk_init(&server_key);
+
+        unsigned char server_pub_der[200]; size_t server_pub_len;
+        if (mbedtls_base64_decode(server_pub_der, sizeof(server_pub_der), &server_pub_len,
+                                  (const unsigned char*)server_pub_b64.c_str(), server_pub_b64.length()) != 0 ||
+            mbedtls_pk_parse_public_key(&server_key, server_pub_der, server_pub_len) != 0 ||
+            mbedtls_ecdh_setup(&ecdh, MBEDTLS_ECP_DP_SECP256R1) != 0 ||
+            mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(client_key), MBEDTLS_ECDH_OURS) != 0 ||
+            mbedtls_ecdh_get_params(&ecdh, (mbedtls_ecp_keypair*)mbedtls_pk_ec(server_key), MBEDTLS_ECDH_THEIRS) != 0) {
+            Serial.println("[ownerPairing] ECDH setup failed");
+            mbedtls_ecdh_free(&ecdh); mbedtls_pk_free(&server_key);
+            http.end(); mbedtls_pk_free(&client_key); return "";
+        }
+
+        unsigned char shared_secret[32]; size_t slen;
+        if (mbedtls_ecdh_calc_secret(&ecdh, &slen, shared_secret, sizeof(shared_secret),
+                                     mbedtls_ctr_drbg_random, &ctr_drbg) != 0 || slen != 32) {
+            Serial.println("[ownerPairing] ECDH secret failed");
+            mbedtls_ecdh_free(&ecdh); mbedtls_pk_free(&server_key);
+            http.end(); mbedtls_pk_free(&client_key); return "";
+        }
+        mbedtls_ecdh_free(&ecdh); mbedtls_pk_free(&server_key);
+
+        // HKDF — note: different info string than /secure-check-pairing
+        unsigned char kek[16];
+        const unsigned char kdf_info[] = "owner-pairing-kek";
+        if (hkdf_sha256(NULL, 0, shared_secret, 32, kdf_info, strlen((char*)kdf_info), kek, 16) != 0) {
+            Serial.println("[ownerPairing] HKDF failed");
+            http.end(); mbedtls_pk_free(&client_key); return "";
+        }
+
+        // AES-GCM decrypt (last 16 bytes = tag)
+        unsigned char enc_buf[48], nonce[12]; size_t enc_len, nonce_len;
+        if (mbedtls_base64_decode(enc_buf, sizeof(enc_buf), &enc_len,
+                                  (const unsigned char*)enc_key_b64.c_str(), enc_key_b64.length()) != 0 ||
+            mbedtls_base64_decode(nonce, sizeof(nonce), &nonce_len,
+                                  (const unsigned char*)nonce_b64.c_str(), nonce_b64.length()) != 0 || nonce_len != 12) {
+            Serial.println("[ownerPairing] base64 decode failed");
+            http.end(); mbedtls_pk_free(&client_key); return "";
+        }
+
+        mbedtls_gcm_context gcm; mbedtls_gcm_init(&gcm);
+        if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, kek, 128) != 0) {
+            Serial.println("[ownerPairing] GCM setkey failed");
+            mbedtls_gcm_free(&gcm); http.end(); mbedtls_pk_free(&client_key); return "";
+        }
+        size_t cipher_len = enc_len - 16;
+        unsigned char tag[16]; memcpy(tag, enc_buf + cipher_len, 16);
+        unsigned char pairing_key[16];
+        int gcm_ret = mbedtls_gcm_auth_decrypt(&gcm, cipher_len, nonce, 12,
+                                               NULL, 0, tag, 16, enc_buf, pairing_key);
+        mbedtls_gcm_free(&gcm);
+        if (gcm_ret != 0) {
+            Serial.printf("[ownerPairing] GCM decrypt failed: %d\n", gcm_ret);
+            http.end(); mbedtls_pk_free(&client_key); return "";
+        }
+
+        // Convert raw 16-byte key to hex string
+        char hexbuf[33];
+        for (int i = 0; i < 16; i++) sprintf(hexbuf + i * 2, "%02x", pairing_key[i]);
+        hexbuf[32] = '\0';
+        key = String(hexbuf);
+        Serial.println("[ownerPairing] Paired! Key: " + key);
+    } else {
+        Serial.println("[ownerPairing] Server error: " + http.getString());
+    }
+
     http.end(); mbedtls_pk_free(&client_key);
     return key;
 }
@@ -528,8 +664,14 @@ static void executeMainFlow() {
             String serverKey = fetchKeyFromServer();
             if (serverKey.length() > 0)
                 saveKeyToNVS(serverKey.c_str());
-            else
-                Serial.println("Server key fetch failed.");
+            else {
+                Serial.println("Not paired — calling /owner-pairing...");
+                String pairedKey = ownerPairing();
+                if (pairedKey.length() > 0)
+                    saveKeyToNVS(pairedKey.c_str());
+                else
+                    Serial.println("Owner pairing failed.");
+            }
         }
         WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
         vTaskDelay(pdMS_TO_TICKS(100));

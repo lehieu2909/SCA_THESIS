@@ -8,7 +8,7 @@
 #define WIFI_SSID        "nubia Neo 2"
 #define WIFI_PASSWORD    "29092004"
 #define VEHICLE_ID       "1HGBH41JXMN109186"
-#define SERVER_FALLBACK  "http://10.34.20.66:8000"
+#define SERVER_FALLBACK  "http://139.59.232.153:8000"
 
 // ── BLE ───────────────────────────────────────────────────────────────────────
 #define DEVICE_NAME         "SmartCar_Vehicle"

@@ -1,0 +1,30 @@
+{
+    "configurations": [
+        {
+            "name": "ESP32-S3 (Arduino)",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "C:/Users/Hieu Le/AppData/Local/Arduino15/packages/esp32/hardware/esp32/3.3.7/cores/esp32",
+                "C:/Users/Hieu Le/AppData/Local/Arduino15/packages/esp32/hardware/esp32/3.3.7/variants/esp32s3",
+                "C:/Users/Hieu Le/AppData/Local/Arduino15/packages/esp32/hardware/esp32/3.3.7/libraries/**",
+                "C:/Users/Hieu Le/AppData/Local/Arduino15/packages/esp32/tools/esp32-libs/3.3.7/include/mbedtls/mbedtls/include",
+                "C:/Users/Hieu Le/AppData/Local/Arduino15/packages/esp32/tools/esp32-libs/3.3.7/include/mbedtls/port/include",
+                "C:/Users/Hieu Le/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2511/xtensa-esp-elf/include",
+                "C:/Users/Hieu Le/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2511/lib/gcc/xtensa-esp-elf/14.2.0/include",
+                "C:/Users/Hieu Le/Documents/Arduino/libraries/**"
+            ],
+            "defines": [
+                "ARDUINO=10607",
+                "ARDUINO_ESP32S3_DEV",
+                "ESP32",
+                "ESP_PLATFORM",
+                "CONFIG_ARDUINO_LOOP_STACK_SIZE=8192"
+            ],
+            "compilerPath": "C:/Users/Hieu Le/AppData/Local/Arduino15/packages/esp32/tools/esp-x32/2511/bin/xtensa-esp-elf-g++.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64"
+        }
+    ],
+    "version": 4
+}
