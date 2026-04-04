@@ -537,10 +537,11 @@ def create_friend_share(req: FriendShareCreateRequest):
     result = db_create_friend_key(req.vehicle_id, req.friend_name, req.ttl_hours)
     print(f"✓ Friend share created: {result['friend_id']} for vehicle {req.vehicle_id}, expires {result['expires_at']}")
 
+    local_ip = get_local_ip()
     return FriendShareCreateResponse(
         friend_id=result["friend_id"],
         claim_token=result["claim_token"],
-        claim_url=f"/friend-sharing/claim/{result['claim_token']}",
+        claim_url=f"http://{local_ip}:8000/friend-sharing/claim/{result['claim_token']}",
         expires_at=result["expires_at"]
     )
 
