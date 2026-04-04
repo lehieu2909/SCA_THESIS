@@ -36,7 +36,7 @@ if resp.status_code != 200:
 share = resp.json()
 print(f"✓ Share created")
 print(f"  friend_id   : {share['friend_id']}")
-print(f"  claim_url   : {SERVER_URL}{share['claim_url']}")
+print(f"  claim_url   : {share['claim_url']}")
 print(f"  expires_at  : {share['expires_at']}")
 
 friend_id   = share["friend_id"]
