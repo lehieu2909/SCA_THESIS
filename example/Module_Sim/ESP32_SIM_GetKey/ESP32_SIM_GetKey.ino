@@ -24,8 +24,8 @@
 // CẤU HÌNH
 // =============================================================================
 #define simSerial   Serial2
-#define RX_PIN      7
-#define TX_PIN      6
+#define RX_PIN      6
+#define TX_PIN      7
 #define SIM_BAUD    115200
 
 #define APN         "v-internet"   // Viettel; Mobifone: "m-wap"; Vinaphone: "m3-world"
@@ -104,17 +104,45 @@ bool simInit() {
 
     atOk("ATE0");  // echo off
 
-    // Chờ đăng ký mạng (AT+CREG: 0,1 hoặc 0,5)
+    // ── Chẩn đoán SIM ────────────────────────────────────────────────────────
+    // Kiểm tra SIM có nhận không (READY = OK, SIM PIN = bị khóa PIN)
+    String cpinResp = atCmd("AT+CPIN?", "OK", 3000);
+    Serial.println("[SIM] CPIN: " + cpinResp);
+    if (cpinResp.indexOf("READY") < 0) {
+        Serial.println("[SIM] LOI: SIM chua san sang (bi khoa PIN hoac khong co SIM)");
+        return false;
+    }
+
+    // Kiểm tra signal quality (0-31 = có sóng, 99 = không có sóng)
+    atCmd("AT+CSQ", "OK", 2000);
+
+    // Đặt chế độ mạng tự động (phòng trường hợp bị set manual)
+    atOk("AT+COPS=0", 5000);
+
+    // Chờ đăng ký mạng
+    // A7680C là module 4G LTE: dùng AT+CEREG (EPS) thay vì AT+CREG (CS/2G/3G)
     Serial.println("[SIM] Cho dang ky mang...");
     unsigned long t = millis();
     bool netOk = false;
-    while (millis() - t < 30000) {
-        String r = atCmd("AT+CREG?", "OK", 3000);
+    while (millis() - t < 60000) {
+        // Thử CEREG (LTE) trước, fallback sang CREG (2G/3G)
+        String r = atCmd("AT+CEREG?", "OK", 3000);
+        if (r.indexOf(",1") >= 0 || r.indexOf(",5") >= 0) { netOk = true; break; }
+        r = atCmd("AT+CREG?", "OK", 3000);
         if (r.indexOf(",1") >= 0 || r.indexOf(",5") >= 0) { netOk = true; break; }
         delay(2000);
     }
-    if (!netOk) { Serial.println("[SIM] LOI: khong co mang"); return false; }
+    if (!netOk) {
+        // In thêm thông tin debug khi thất bại
+        atCmd("AT+CSQ",    "OK", 2000);   // signal lúc thất bại
+        atCmd("AT+COPS?",  "OK", 3000);   // operator hiện tại
+        atCmd("AT+CNMP?",  "OK", 2000);   // network mode (2=auto, 38=LTE only)
+        Serial.println("[SIM] LOI: khong co mang");
+        return false;
+    }
     Serial.println("[SIM] Mang OK");
+    atCmd("AT+CSQ",   "OK", 2000);   // signal quality (0-31, 99=unknown)
+    atCmd("AT+COPS?", "OK", 3000);   // operator name
 
     // Kích hoạt PDP context (dữ liệu di động)
     Serial.printf("[SIM] Ket noi data (APN: %s)...\n", APN);
