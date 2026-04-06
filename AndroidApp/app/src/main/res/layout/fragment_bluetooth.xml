@@ -57,7 +57,7 @@
                 android:textColor="@color/text_secondary"/>
 
             <!-- LIST -->
-            <androidx.recyclerview.widget.RecyclerView
+            <ListView
                 android:id="@+id/rvBluetooth"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"

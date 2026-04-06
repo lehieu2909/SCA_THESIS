@@ -1,60 +1,201 @@
 package com.example.uwb.Bluetooth
 
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.content.*
+import android.content.pm.PackageManager
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.*
+import android.widget.ArrayAdapter
+import android.widget.Toast
+import androidx.annotation.RequiresApi
+import androidx.core.app.ActivityCompat
 import androidx.fragment.app.Fragment
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import com.example.uwb.R
+import com.example.uwb.databinding.FragmentBluetoothBinding
+import com.example.uwb.transport.UsbTransport
 
-// TODO: Rename parameter arguments, choose names that match
-// the fragment initialization parameters, e.g. ARG_ITEM_NUMBER
-private const val ARG_PARAM1 = "param1"
-private const val ARG_PARAM2 = "param2"
-
-/**
- * A simple [Fragment] subclass.
- * Use the [BluetoothFragment.newInstance] factory method to
- * create an instance of this fragment.
- */
 class BluetoothFragment : Fragment() {
-    // TODO: Rename and change types of parameters
-    private var param1: String? = null
-    private var param2: String? = null
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        arguments?.let {
-            param1 = it.getString(ARG_PARAM1)
-            param2 = it.getString(ARG_PARAM2)
+    private var _binding: FragmentBluetoothBinding? = null
+    private val binding get() = _binding!!
+
+    private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
+    private val deviceList = mutableListOf<BluetoothDevice>()
+    private val deviceNameList = mutableListOf<String>()
+    private lateinit var listAdapter: ArrayAdapter<String>
+
+    private lateinit var usbTransport: UsbTransport
+
+    private val ESP32_VENDOR_ID = 0x303A
+    private val SCAN_PERIOD_MS = 10000L
+
+    // BLE scan callback — chỉ nhận BLE advertisements (không phải Classic Bluetooth)
+    private val bleScanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            val device = result.device
+            if (ActivityCompat.checkSelfPermission(
+                    requireContext(), Manifest.permission.BLUETOOTH_CONNECT
+                ) != PackageManager.PERMISSION_GRANTED
+            ) return
+            // Bỏ qua nếu đã có trong danh sách
+            if (deviceList.none { it.address == device.address }) {
+                deviceList.add(device)
+                val name = device.name ?: "Unknown"
+                deviceNameList.add("$name\n${device.address}")
+                requireActivity().runOnUiThread { listAdapter.notifyDataSetChanged() }
+            }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            requireActivity().runOnUiThread {
+                Toast.makeText(requireContext(), "BLE scan lỗi: $errorCode", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
+    // Receiver: bắt ESP32-S3 cắm vào khi app đang chạy
+    private val usbAttachReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+                val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                device?.let { connectUsbDevice(it) }
+            }
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
         savedInstanceState: Bundle?
-    ): View? {
-        // Inflate the layout for this fragment
-        return inflater.inflate(R.layout.fragment_bluetooth, container, false)
+    ): View {
+        _binding = FragmentBluetoothBinding.inflate(inflater, container, false)
+
+        listAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_list_item_1, deviceNameList)
+        binding.rvBluetooth.adapter = listAdapter
+
+        usbTransport = UsbTransport(requireContext())
+
+        requireContext().registerReceiver(
+            usbAttachReceiver,
+            IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+        )
+
+        // Kết nối ESP32-S3 qua USB nếu đã cắm sẵn
+        findAndConnectEsp32()
+
+        // Nhấn vào thiết bị BLE → gửi lệnh "CONNECT:<MAC>" xuống S3
+        binding.rvBluetooth.setOnItemClickListener { _, _, position, _ ->
+            val device = deviceList[position]
+            val mac = device.address.lowercase()
+            val name = if (ActivityCompat.checkSelfPermission(
+                    requireContext(), Manifest.permission.BLUETOOTH_CONNECT
+                ) == PackageManager.PERMISSION_GRANTED
+            ) device.name ?: "Unknown" else "Unknown"
+
+            // Giao thức: S3 nhận "CONNECT:<mac>\n" và tự kết nối BLE
+            val command = "CONNECT:$mac\n"
+            usbTransport.send(command.toByteArray())
+            Toast.makeText(
+                requireContext(),
+                "Yêu cầu S3 kết nối BLE → $name ($mac)",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        requestBluetoothPermissions()
+        binding.btnRefresh.setOnClickListener { scanBle() }
+
+        return binding.root
     }
 
-    companion object {
-        /**
-         * Use this factory method to create a new instance of
-         * this fragment using the provided parameters.
-         *
-         * @param param1 Parameter 1.
-         * @param param2 Parameter 2.
-         * @return A new instance of fragment BluetoothFragment.
-         */
-        // TODO: Rename and change types and number of parameters
-        @JvmStatic
-        fun newInstance(param1: String, param2: String) =
-            BluetoothFragment().apply {
-                arguments = Bundle().apply {
-                    putString(ARG_PARAM1, param1)
-                    putString(ARG_PARAM2, param2)
+    private fun findAndConnectEsp32() {
+        val usbManager = requireContext().getSystemService(Context.USB_SERVICE) as UsbManager
+        val esp32 = usbManager.deviceList.values.find { it.vendorId == ESP32_VENDOR_ID }
+        if (esp32 != null) {
+            connectUsbDevice(esp32)
+        } else {
+            Toast.makeText(requireContext(), "Chưa thấy ESP32-S3 — hãy cắm cáp USB", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun connectUsbDevice(device: UsbDevice) {
+        usbTransport.openDevice(device) {
+            // Nhận phản hồi từ S3 (FOUND, CONNECTED, CONNECT_FAILED, BLE_DISCONNECTED, ...)
+            usbTransport.receive { data ->
+                val msg = String(data).trim()
+                requireActivity().runOnUiThread {
+                    Toast.makeText(requireContext(), "S3: $msg", Toast.LENGTH_SHORT).show()
                 }
             }
+            requireActivity().runOnUiThread {
+                Toast.makeText(requireContext(), "Đã kết nối ESP32-S3 qua USB", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /**
+     * Quét BLE advertisements trong 10 giây.
+     * DevKit V1 sẽ xuất hiện trong danh sách với tên "ESP32-DevKit-BLE".
+     */
+    private fun scanBle() {
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+            startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            return
+        }
+        if (ActivityCompat.checkSelfPermission(
+                requireContext(), Manifest.permission.BLUETOOTH_SCAN
+            ) != PackageManager.PERMISSION_GRANTED
+        ) return
+
+        deviceList.clear()
+        deviceNameList.clear()
+        listAdapter.notifyDataSetChanged()
+
+        bluetoothAdapter.bluetoothLeScanner?.startScan(bleScanCallback)
+        Toast.makeText(requireContext(), "Đang quét BLE (10s)...", Toast.LENGTH_SHORT).show()
+
+        // Dừng scan sau 10 giây để tiết kiệm pin
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (ActivityCompat.checkSelfPermission(
+                    requireContext(), Manifest.permission.BLUETOOTH_SCAN
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                bluetoothAdapter.bluetoothLeScanner?.stopScan(bleScanCallback)
+            }
+        }, SCAN_PERIOD_MS)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun requestBluetoothPermissions() {
+        ActivityCompat.requestPermissions(
+            requireActivity(),
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ),
+            1
+        )
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        if (ActivityCompat.checkSelfPermission(
+                requireContext(), Manifest.permission.BLUETOOTH_SCAN
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            bluetoothAdapter?.bluetoothLeScanner?.stopScan(bleScanCallback)
+        }
+        requireContext().unregisterReceiver(usbAttachReceiver)
+        usbTransport.disconnect()
+        _binding = null
     }
 }

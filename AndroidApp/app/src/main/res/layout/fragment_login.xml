@@ -31,33 +31,56 @@
             android:contentDescription="@null"
             android:layout_marginBottom="24dp"/>
 
-        <!-- Email -->
-        <EditText
-            android:id="@+id/edtEmail"
+        <!-- EMAIL -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/layoutEmail"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
             android:hint="Email"
-            android:paddingHorizontal="16dp"
-            android:background="@drawable/bg_login_edittext"
-            android:inputType="textEmailAddress"
-            android:layout_marginBottom="16dp"/>
+            app:boxBackgroundMode="outline"
+            app:boxStrokeColor="@color/bg_blue_light"
+            app:boxCornerRadiusTopStart="12dp"
+            app:boxCornerRadiusTopEnd="12dp"
+            app:boxCornerRadiusBottomStart="12dp"
+            app:boxCornerRadiusBottomEnd="12dp">
 
-        <!-- Password -->
-        <EditText
-            android:id="@+id/edtPassword"
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/edtEmail"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingHorizontal="16dp"
+                android:inputType="textEmailAddress"/>
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <!-- PASSWORD -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/layoutPassword"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="24dp"
             android:hint="Password"
-            android:paddingHorizontal="16dp"
-            android:background="@drawable/bg_login_edittext"
-            android:inputType="textPassword"
-            android:layout_marginBottom="24dp"/>
+            app:boxBackgroundMode="outline"
+            app:boxStrokeColor="@color/bg_blue_light"
+            app:boxCornerRadiusTopStart="12dp"
+            app:boxCornerRadiusTopEnd="12dp"
+            app:boxCornerRadiusBottomStart="12dp"
+            app:boxCornerRadiusBottomEnd="12dp"
+            app:endIconMode="password_toggle">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/edtPassword"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingHorizontal="16dp"
+                android:inputType="textPassword"/>
+        </com.google.android.material.textfield.TextInputLayout>
 
         <!-- Login button -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnLogin"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="60dp"
             android:text="Login"
             android:textSize="20sp"
             android:textStyle="bold"
