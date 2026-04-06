@@ -1,5 +1,6 @@
 package com.example.uwb.repository
 
+import android.util.Log
 import com.example.uwb.model.PairingRequest
 import com.example.uwb.crypto.HKDF_SHA256
 import com.example.uwb.crypto.AesGcmUtil
@@ -41,6 +42,7 @@ class PairingRepository {
 
         // 5️⃣ HKDF → KEK
         val kek = HKDF_SHA256.hkdf(sharedSecret)
+
 
         // 6️⃣ Giải mã pairing key
         AesGcmUtil.decrypt(

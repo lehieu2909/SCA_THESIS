@@ -5,12 +5,17 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
+import com.example.uwb.R
+import com.example.uwb.dataLg.SessionManager
+
 import com.example.uwb.databinding.FragmentWelcomeBinding
 
 class WelcomeFragment : Fragment() {
 
     private var _binding: FragmentWelcomeBinding? = null
     private val binding get() = _binding!!
+
+    private lateinit var session: SessionManager
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -24,19 +29,34 @@ class WelcomeFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        // Ánh xạ & xử lý button OWPA
+        session = SessionManager(requireContext())
+
         binding.btnOwpa.setOnClickListener {
-            onOwpaClicked()
+
+            if (session.isLoggedIn()) {
+                goToEnterVIN()
+            } else {
+                // Chưa login → sang LoginFragment
+                goToLogin()
+            }
         }
     }
 
-    private fun onOwpaClicked() {
-        // TODO: mở dialog đăng nhập OWPA
-        // hoặc navigate sang Fragment khác
+    private fun goToLogin() {
+        requireActivity().supportFragmentManager.beginTransaction()
+            .replace(R.id.fragment_container, LoginFragment())
+            .addToBackStack(null)
+            .commit()
+    }
+
+    private fun goToEnterVIN() {
+        requireActivity().supportFragmentManager.beginTransaction()
+            .replace(R.id.fragment_container, EnterVinFragment())
+            .commit()
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
-        _binding = null // tránh memory leak
+        _binding = null
     }
 }

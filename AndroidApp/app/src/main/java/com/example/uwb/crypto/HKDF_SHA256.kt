@@ -8,8 +8,8 @@ object HKDF_SHA256 {
 
     fun hkdf(sharedSecret: ByteArray): ByteArray {
 
-        val salt = "smart-car-access-salt".toByteArray(Charsets.UTF_8)
-        val info = byteArrayOf(0x20) // ASCII space ' '
+        val salt = "smart-car-access-salt".toByteArray()
+        val info = "owner-pairing-kek".toByteArray()
 
         val hkdf = HKDFBytesGenerator(SHA256Digest())
         hkdf.init(
