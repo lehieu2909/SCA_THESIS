@@ -331,8 +331,19 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
         if (!advertisedDevice.haveServiceUUID() ||
             !advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) return;
 
+        int rssi = advertisedDevice.getRSSI();
         Serial.printf("[BLE scan] Anchor: %s | RSSI: %d dBm\n",
-                      advertisedDevice.toString().c_str(), advertisedDevice.getRSSI());
+                      advertisedDevice.toString().c_str(), rssi);
+
+        // Chỉ kết nối khi đủ gần — tránh timeout 30s ở xa (RSSI quá yếu)
+        if (rssi < RSSI_THRESHOLD_DBM) {
+            Serial.printf("[BLE scan] RSSI %d dBm < threshold %d — too far, skipping\n",
+                          rssi, RSSI_THRESHOLD_DBM);
+            // Stop scan ngay để loop restart scan mới — tránh chờ hết 10s do BLE dedup
+            BLEDevice::getScan()->stop();
+            return;
+        }
+
         delete myDevice;
         myDevice = new BLEAdvertisedDevice(advertisedDevice);
         BLEDevice::getScan()->stop();
@@ -383,7 +394,7 @@ static bool connectToServer() {
 
     bool connOk = false;
     for (int attempt = 1; attempt <= 3; attempt++) {
-        if (pClient->connectTimeout(myDevice, 5000)) { connOk = true; break; }
+        if (pClient->connectTimeout(myDevice, 500)) { connOk = true; break; }
         Serial.printf("[bleTask] Connection failed (%d/3)\n", attempt);
         if (attempt < 3) vTaskDelay(pdMS_TO_TICKS(300));
     }
@@ -485,14 +496,12 @@ static void bleTask(void* param) {
         // ── SCAN ──────────────────────────────────────────────────────────────
         Serial.println("[bleTask] Scanning for Anchor...");
         xEventGroupClearBits(sysEvents, EVT_DEVICE_FOUND);
-        // Scan 10s rồi restart — tránh BLE stack cache cũ bỏ qua device mới
-        EventBits_t found;
+        // start(10, false) là blocking — trả về khi hết 10s hoặc stop() được gọi sớm
+        // Sau khi trả về, check bit ngay — không cần wait thêm
         do {
             pBLEScan->clearResults();
             pBLEScan->start(10, false);
-            found = xEventGroupWaitBits(sysEvents, EVT_DEVICE_FOUND, pdTRUE, pdFALSE,
-                                        pdMS_TO_TICKS(11000));
-        } while (!(found & EVT_DEVICE_FOUND));
+        } while (!(xEventGroupGetBits(sysEvents) & EVT_DEVICE_FOUND));
 
         // ── CONNECT + AUTH ─────────────────────────────────────────────────────
         if (!connectToServer()) {
@@ -520,6 +529,8 @@ static void bleTask(void* param) {
                 // UWB dừng ở > 20m — dùng RSSI detect khi Tag quay lại
                 if (pClient) {
                     int rssi = pClient->getRssi();
+                    Serial.printf("[bleTask] UWB stopped — BLE connected, RSSI=%d dBm (threshold=%d)\n",
+                                  rssi, RSSI_THRESHOLD_DBM);
                     if (rssi > RSSI_THRESHOLD_DBM && rssi > -115 && rssi != 0) {
                         Serial.printf("[bleTask] RSSI=%d dBm — within range, re-arming\n", rssi);
                         uwbStoppedFar = false;

@@ -4,21 +4,21 @@
 // USER CONFIGURATION — edit before flashing
 // =============================================================================
 // 16-byte pairing key as a 32-char hex string (must match the Anchor's stored key)
-#define PAIRING_KEY_HEX "191b889f1715c9459515535d00657921"
+#define PAIRING_KEY_HEX "3dfd47fe325f9655184a88bdaa166742"
 
-// ── BLE UUIDs (must match Anchor) ────────────────────────────────────────────
 #define SERVICE_UUID        "12345678-1234-5678-1234-56789abcdef0"
 #define CHARACTERISTIC_UUID "abcdef12-3456-7890-abcd-ef1234567890"
 #define AUTH_CHAR_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHALLENGE_CHAR_UUID "ceb5483e-36e1-4688-b7f5-ea07361b26a9"
 
 // ── Distance thresholds ───────────────────────────────────────────────────────
-#define UWB_UNLOCK_DISTANCE_M   (3.0)   // ≤ this → send VERIFIED (unlock)
+#define UWB_UNLOCK_DISTANCE_M   (3.0)   // ≤ 
+// ── BLE UUIDs (must match Anchor) ────────this → send VERIFIED (unlock)
 #define UWB_LOCK_DISTANCE_M     (3.5)   // > this → send WARNING (lock); 0.5 m hysteresis
-#define UWB_FAR_DISTANCE_M      (20.0)  // > this → stop UWB, monitor with RSSI
+#define UWB_FAR_DISTANCE_M      (10.0)  // > this → stop UWB, monitor with RSSI
 
 // ── RSSI thresholds ───────────────────────────────────────────────────────────
-#define RSSI_THRESHOLD_DBM      (-150)  // RSSI above this → resume UWB (≈ 20 m BLE range)
+#define RSSI_THRESHOLD_DBM      (-100)  // RSSI above this → resume UWB (≈ 20 m BLE range)
 #define RSSI_CHECK_INTERVAL_MS  (1000U) // how often to check RSSI while UWB is stopped
 
 // ── UWB retry ────────────────────────────────────────────────────────────────
