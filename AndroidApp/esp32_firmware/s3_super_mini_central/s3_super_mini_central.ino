@@ -1,23 +1,23 @@
 /**
  * ESP32-S3 Super Mini — USB CDC + BLE Central
- * ─────────────────────────────────────────────
+ * ──────────────────────────────────────────
  * Nhận lệnh từ Android app qua USB Serial (115200 baud):
- *   "CONNECT:<mac>\n"    → scan + kết nối BLE tới DevKit V1
- *   "DISCONNECT\n"       → ngắt kết nối BLE hiện tại
+ *   "SET_KEY:<key_hex>\n"  → lưu key, bật LED nếu key hợp lệ (32 hex chars)
+ *   "CONNECT:<mac>\n"      → scan + kết nối BLE tới DevKit
+ *   "DISCONNECT\n"         → ngắt BLE
  *
  * Gửi trạng thái về app:
- *   "READY"              → khởi động xong
- *   "SCANNING..."        → đang quét BLE
- *   "FOUND:<mac>"        → tìm thấy thiết bị
- *   "NOT_FOUND:<mac>"    → không thấy sau 5 giây scan
- *   "CONNECTED:<mac>"    → kết nối BLE thành công
- *   "CONNECT_FAILED"     → kết nối thất bại
- *   "BLE_DISCONNECTED"   → thiết bị BLE tự ngắt
- *   "NOTIFY:<data>"      → dữ liệu nhận từ DevKit V1 qua notify
+ *   "READY"                → khởi động xong
+ *   "KEY_OK:<hex>"         → nhận key hợp lệ, LED sáng
+ *   "KEY_INVALID"          → key sai format, LED tắt
+ *   "SCANNING..."          → đang quét BLE
+ *   "FOUND:<mac>"          → tìm thấy DevKit
+ *   "CONNECTED:<mac>"      → kết nối DevKit thành công
+ *   "DISTANCE:<value>"     → distance (random test)
  *
- * Board: ESP32-S3 Dev Module (Arduino IDE)
- * USB Mode: USB-OTG (CDC) — trong Tools > USB Mode chọn "USB-OTG (TinyUSB)"
- * hoặc "Hardware CDC and JTAG"
+ * Board: ESP32-S3 Super Mini
+ * LED onboard: GPIO 48
+ * USB Mode: "Hardware CDC and JTAG"
  */
 
 #include <Arduino.h>
@@ -25,30 +25,44 @@
 #include <BLEClient.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
-#include <BLERemoteCharacteristic.h>
-#include <BLERemoteService.h>
 
-// ── UUID phải khớp với DevKit V1 ──────────────────────────────────────────────
 #define SERVICE_UUID        "12345678-1234-1234-1234-1234567890ab"
 #define CHARACTERISTIC_UUID "abcdefab-1234-1234-1234-abcdefabcdef"
+#define LED_PIN             48
 
 BLEClient*               pClient               = nullptr;
 BLEScan*                 pBLEScan              = nullptr;
 BLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
 bool                     bleConnected          = false;
+unsigned long            lastDistanceTime      = 0;
+const unsigned long      DISTANCE_INTERVAL     = 2000;
 
-// ── Callback: trạng thái kết nối BLE ─────────────────────────────────────────
+String storedKeyHex  = "";
+String pendingConnect = "";  // lưu MAC cần connect, xử lý ngoài loop
+
+// ── Kiểm tra 32 ký tự hex hợp lệ ──────────────────────────────────────────
+bool isValidKeyHex(const String& key) {
+    if (key.length() != 32) return false;
+    for (int i = 0; i < 32; i++) {
+        char c = key.charAt(i);
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) return false;
+    }
+    return true;
+}
+
+// ── BLE callbacks ──────────────────────────────────────────────────────────
 class ClientCallbacks : public BLEClientCallbacks {
     void onConnect(BLEClient* pC) override {
-        // Báo kết nối thành công sẽ làm ở connectToBLE() sau khi setup service xong
+        Serial.println("BLE_CLIENT_CONNECTED");
     }
     void onDisconnect(BLEClient* pC) override {
         bleConnected = false;
-        Serial.println("BLE_DISCONNECTED");
+        Serial.println("BLE_CLIENT_DISCONNECTED");
     }
 };
 
-// ── Callback: nhận notify từ DevKit V1 ───────────────────────────────────────
 void notifyCallback(BLERemoteCharacteristic* pChar,
                     uint8_t* pData, size_t length, bool isNotify) {
     String msg = "";
@@ -56,16 +70,53 @@ void notifyCallback(BLERemoteCharacteristic* pChar,
     Serial.println("NOTIFY:" + msg);
 }
 
-// ── Hàm kết nối BLE tới MAC chỉ định ─────────────────────────────────────────
-void connectToBLE(String targetMac) {
-    Serial.println("SCANNING...");
+// ── Xử lý từng lệnh Serial ─────────────────────────────────────────────────
+void handleCommand(const String& raw) {
+    String cmd = raw;
+    cmd.trim();
+    if (cmd.length() == 0) return;
 
-    BLEScanResults results = pBLEScan->start(5, false);  // scan tối đa 5 giây
+    if (cmd.startsWith("SET_KEY:")) {
+        String key = cmd.substring(8);
+        storedKeyHex = key;
+        // Debug: in ra key nhận được và độ dài
+        Serial.println("DBG_KEY:[" + key + "] len=" + String(key.length()));
+        if (isValidKeyHex(key)) {
+            pinMode(LED_PIN, OUTPUT);
+            digitalWrite(LED_PIN, HIGH);   // LED sáng ← key hợp lệ
+            Serial.println("KEY_OK:" + key);
+            // Forward key sang Anchor qua BLE nếu đang kết nối
+            if (bleConnected && pRemoteCharacteristic) {
+                pRemoteCharacteristic->writeValue((uint8_t*)key.c_str(), key.length(), true);
+                Serial.println("KEY_FORWARDED_TO_ANCHOR:" + key);   
+            }
+        } else {
+            pinMode(LED_PIN, OUTPUT);
+            digitalWrite(LED_PIN, LOW);    // LED tắt ← key sai format
+            Serial.println("KEY_INVALID:len=" + String(key.length()));
+        }
+
+    } else if (cmd.startsWith("CONNECT:")) {
+        pendingConnect = cmd.substring(8);
+        pendingConnect.toLowerCase();
+
+    } else if (cmd == "DISCONNECT") {
+        if (pClient && bleConnected) {
+            pClient->disconnect();
+            bleConnected = false;
+            Serial.println("DISCONNECTED");
+        }
+    }
+}
+
+// ── BLE scan + connect (blocking ~5s) ──────────────────────────────────────
+void connectToBLE(const String& targetMac) {
+    Serial.println("SCANNING...");
+    BLEScanResults results = pBLEScan->start(5, false);
 
     BLEAdvertisedDevice* target = nullptr;
     for (int i = 0; i < results.getCount(); i++) {
         BLEAdvertisedDevice dev = results.getDevice(i);
-        // So sánh MAC (ESP32 BLE library dùng lowercase)
         if (dev.getAddress().toString() == std::string(targetMac.c_str())) {
             target = new BLEAdvertisedDevice(dev);
             break;
@@ -73,87 +124,87 @@ void connectToBLE(String targetMac) {
     }
     pBLEScan->clearResults();
 
-    if (target == nullptr) {
-        Serial.println("NOT_FOUND:" + targetMac);
-        return;
-    }
+    if (!target) { Serial.println("NOT_FOUND:" + targetMac); return; }
     Serial.println("FOUND:" + targetMac);
 
-    // Tạo client mới nếu chưa có hoặc client cũ đã disconnect
-    if (pClient == nullptr || !pClient->isConnected()) {
+    if (!pClient || !pClient->isConnected()) {
         pClient = BLEDevice::createClient();
         pClient->setClientCallbacks(new ClientCallbacks());
     }
-
+    BLEDevice::setMTU(100);   // negotiate MTU đủ lớn cho 32-byte key
     if (!pClient->connect(target)) {
-        Serial.println("CONNECT_FAILED");
-        delete target;
-        return;
+        Serial.println("CONNECT_FAILED"); delete target; return;
     }
 
-    // Lấy remote service
     BLERemoteService* pService = pClient->getService(SERVICE_UUID);
-    if (pService == nullptr) {
+    if (!pService) {
         Serial.println("SERVICE_NOT_FOUND");
-        pClient->disconnect();
-        delete target;
-        return;
+        pClient->disconnect(); delete target; return;
     }
-
-    // Lấy remote characteristic
     pRemoteCharacteristic = pService->getCharacteristic(CHARACTERISTIC_UUID);
-    if (pRemoteCharacteristic == nullptr) {
+    if (!pRemoteCharacteristic) {
         Serial.println("CHAR_NOT_FOUND");
-        pClient->disconnect();
-        delete target;
-        return;
+        pClient->disconnect(); delete target; return;
     }
-
-    // Đăng ký nhận notify từ DevKit V1
-    if (pRemoteCharacteristic->canNotify()) {
+    if (pRemoteCharacteristic->canNotify())
         pRemoteCharacteristic->registerForNotify(notifyCallback);
-    }
 
     bleConnected = true;
+    lastDistanceTime = millis();
     Serial.println("CONNECTED:" + targetMac);
+
+    // Nếu đã có key từ trước thì gửi ngay cho Anchor
+    if (storedKeyHex.length() > 0 && isValidKeyHex(storedKeyHex)) {
+        pRemoteCharacteristic->writeValue((uint8_t*)storedKeyHex.c_str(), storedKeyHex.length(), true);
+        Serial.println("KEY_FORWARDED_TO_ANCHOR:" + storedKeyHex);
+    }
+
     delete target;
 }
 
-// ── Setup ────────────────────────────────────────────────────────────────────
+// ── setup ──────────────────────────────────────────────────────────────────
 void setup() {
-    // USB CDC Serial (115200 baud, khớp với UsbTransport trong app)
     Serial.begin(115200);
-    delay(1000);  // chờ USB CDC ổn định
+    delay(1000);
 
+    // Init BLE TRƯỚC — tránh BLE reset lại GPIO sau này
     BLEDevice::init("ESP32-S3-Central");
-
     pBLEScan = BLEDevice::getScan();
     pBLEScan->setActiveScan(true);
     pBLEScan->setInterval(100);
     pBLEScan->setWindow(99);
 
+    // Init LED SAU BLE để BLE không reconfigure GPIO 48
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+
     Serial.println("READY");
 }
 
-// ── Loop ─────────────────────────────────────────────────────────────────────
+// ── loop ───────────────────────────────────────────────────────────────────
 void loop() {
-    // Đọc lệnh từ app (kết thúc bằng '\n')
-    if (Serial.available() > 0) {
+    // Đọc hết toàn bộ lệnh trong buffer — SET_KEY được xử lý ngay, không bị block
+    while (Serial.available() > 0) {
         String cmd = Serial.readStringUntil('\n');
-        cmd.trim();
+        handleCommand(cmd);
+    }
 
-        if (cmd.startsWith("CONNECT:")) {
-            String mac = cmd.substring(8);
-            mac.toLowerCase();      // ESP32 BLE library dùng chữ thường
-            connectToBLE(mac);
+    // Xử lý CONNECT sau khi đã đọc hết buffer (tránh bỏ sót SET_KEY)
+    if (pendingConnect.length() > 0) {
+        String mac = pendingConnect;
+        pendingConnect = "";
+        connectToBLE(mac);
+    }
 
-        } else if (cmd == "DISCONNECT") {
-            if (pClient && bleConnected) {
-                pClient->disconnect();
-                bleConnected = false;
-                Serial.println("DISCONNECTED");
-            }
+    // Gửi distance khi đã kết nối BLE
+    if (bleConnected) {
+        unsigned long now = millis();
+        if (now - lastDistanceTime >= DISTANCE_INTERVAL) {
+            lastDistanceTime = now;
+            float dist = 2.0 + (random(80) / 10.0);
+            Serial.println("DISTANCE:" + String(dist, 1));
         }
     }
+
     delay(10);
 }

@@ -21,6 +21,9 @@ import androidx.core.app.ActivityCompat
 import androidx.fragment.app.Fragment
 import com.example.uwb.databinding.FragmentBluetoothBinding
 import com.example.uwb.transport.UsbTransport
+import com.example.uwb.transport.TransportHolder
+import com.example.uwb.UI.PairingLoadingFragment
+import com.example.uwb.dataLg.KeyManager
 
 class BluetoothFragment : Fragment() {
 
@@ -48,7 +51,12 @@ class BluetoothFragment : Fragment() {
             // Bỏ qua nếu đã có trong danh sách
             if (deviceList.none { it.address == device.address }) {
                 deviceList.add(device)
-                val name = device.name ?: "Unknown"
+                // Xử lý device name an toàn - tránh ký tự bậy
+                val name = try {
+                    device.name?.takeIf { it.isNotEmpty() } ?: "Unknown"
+                } catch (e: Exception) {
+                    "Unknown"
+                }
                 deviceNameList.add("$name\n${device.address}")
                 requireActivity().runOnUiThread { listAdapter.notifyDataSetChanged() }
             }
@@ -91,7 +99,7 @@ class BluetoothFragment : Fragment() {
         // Kết nối ESP32-S3 qua USB nếu đã cắm sẵn
         findAndConnectEsp32()
 
-        // Nhấn vào thiết bị BLE → gửi lệnh "CONNECT:<MAC>" xuống S3
+        // Nhấn vào thiết bị BLE → chuyển sang màn hình pairing loading
         binding.rvBluetooth.setOnItemClickListener { _, _, position, _ ->
             val device = deviceList[position]
             val mac = device.address.lowercase()
@@ -100,14 +108,17 @@ class BluetoothFragment : Fragment() {
                 ) == PackageManager.PERMISSION_GRANTED
             ) device.name ?: "Unknown" else "Unknown"
 
-            // Giao thức: S3 nhận "CONNECT:<mac>\n" và tự kết nối BLE
-            val command = "CONNECT:$mac\n"
-            usbTransport.send(command.toByteArray())
-            Toast.makeText(
-                requireContext(),
-                "Yêu cầu S3 kết nối BLE → $name ($mac)",
-                Toast.LENGTH_SHORT
-            ).show()
+            val pairingFragment = PairingLoadingFragment().apply {
+                arguments = Bundle().also {
+                    it.putString("DEVICE_MAC", mac)
+                    it.putString("DEVICE_NAME", name)
+                }
+            }
+
+            requireActivity().supportFragmentManager.beginTransaction()
+                .replace(com.example.uwb.R.id.fragment_container, pairingFragment)
+                .addToBackStack(null)
+                .commit()
         }
 
         requestBluetoothPermissions()
@@ -128,9 +139,13 @@ class BluetoothFragment : Fragment() {
 
     private fun connectUsbDevice(device: UsbDevice) {
         usbTransport.openDevice(device) {
+            // Lưu transport vào holder để UwbFragment dùng lại
+            TransportHolder.transport = usbTransport
+
             // Nhận phản hồi từ S3 (FOUND, CONNECTED, CONNECT_FAILED, BLE_DISCONNECTED, ...)
             usbTransport.receive { data ->
                 val msg = String(data).trim()
+                android.util.Log.d("S3_MSG", msg)   // xem trong Logcat
                 requireActivity().runOnUiThread {
                     Toast.makeText(requireContext(), "S3: $msg", Toast.LENGTH_SHORT).show()
                 }
@@ -195,7 +210,7 @@ class BluetoothFragment : Fragment() {
             bluetoothAdapter?.bluetoothLeScanner?.stopScan(bleScanCallback)
         }
         requireContext().unregisterReceiver(usbAttachReceiver)
-        usbTransport.disconnect()
+        // Không disconnect USB ở đây — UwbFragment sẽ dùng lại transport này
         _binding = null
     }
 }

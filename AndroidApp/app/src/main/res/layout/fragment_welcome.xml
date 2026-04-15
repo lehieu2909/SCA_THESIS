@@ -46,9 +46,9 @@
         <ImageView
             android:id="@+id/imgShield"
             android:layout_width="50dp"
-            android:layout_height="50dp"
+            android:layout_height="70dp"
             android:layout_marginStart="10dp"
-            android:src="@drawable/ic_unlock"/>
+            android:src="@drawable/ic_paired"/>
     </LinearLayout>
 
     <!-- OWPA Button -->

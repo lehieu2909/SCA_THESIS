@@ -15,6 +15,7 @@ class UsbTransport(private val context: Context) : Transport {
     private var ioManager: SerialInputOutputManager? = null
     private var connected = false
     private val permissionHelper = UsbPermissionHelper(context)
+    private var dataCallback: ((ByteArray) -> Unit)? = null
 
     /**
      * Mở device ESP32. Nếu chưa có permission thì xin, sau đó callback onConnected.
@@ -87,24 +88,27 @@ class UsbTransport(private val context: Context) : Transport {
     }
 
     /**
-     * Nhận dữ liệu từ ESP32 bất đồng bộ qua SerialInputOutputManager.
-     * Callback được gọi mỗi khi có data mới (ví dụ: "LED ON\r\n").
+     * Cập nhật callback nhận dữ liệu từ ESP32.
+     * Nếu SerialInputOutputManager chưa chạy thì khởi động lần đầu.
+     * Các lần gọi tiếp theo chỉ đổi callback, không restart manager.
      */
     override fun receive(callback: (ByteArray) -> Unit) {
         if (!connected || port == null) return
-        ioManager?.stop()
-        ioManager = SerialInputOutputManager(port, object : SerialInputOutputManager.Listener {
-            override fun onNewData(data: ByteArray) {
-                callback(data)
-            }
+        dataCallback = callback
+        if (ioManager == null) {
+            ioManager = SerialInputOutputManager(port, object : SerialInputOutputManager.Listener {
+                override fun onNewData(data: ByteArray) {
+                    dataCallback?.invoke(data)
+                }
 
-            override fun onRunError(e: Exception) {
-                Log.e("UsbTransport", "Lỗi nhận: ${e.message}")
-                connected = false
-                ioManager = null
-            }
-        })
-        ioManager?.start()
+                override fun onRunError(e: Exception) {
+                    Log.e("UsbTransport", "Lỗi nhận: ${e.message}")
+                    connected = false
+                    ioManager = null
+                }
+            })
+            ioManager?.start()
+        }
     }
 
     override fun disconnect() {

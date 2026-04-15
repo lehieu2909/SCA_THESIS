@@ -48,7 +48,7 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation ("com.squareup.retrofit2:retrofit:2.9.0")
     implementation ("com.squareup.retrofit2:converter-gson:2.9.0")
-    implementation ("org.bouncycastle:bcprov-jdk15to18:1.78")
+    implementation ("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.github.mik3y:usb-serial-for-android:3.6.0")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

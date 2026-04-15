@@ -4,12 +4,14 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.example.uwb.Bluetooth.BluetoothFragment
 import com.example.uwb.VinValid.VinValidator
 import com.example.uwb.databinding.FragmentEnterVinBinding
 import com.example.uwb.repository.PairingRepository
+import com.example.uwb.dataLg.KeyManager
 import kotlinx.coroutines.launch
 
 class EnterVinFragment : Fragment() {
@@ -51,9 +53,21 @@ class EnterVinFragment : Fragment() {
 
             try {
 
-                val pairingKey = repo.pairVehicle(vin)
+                val result = repo.pairVehicle(vin)
 
-                // Pairing thành công → chuyển sang màn hình bluetooth
+                KeyManager.savePairingKey(
+                    vId = vin,
+                    pId = result.pairingId,
+                    key = result.pairingKey
+                )
+
+                Toast.makeText(
+                    requireContext(),
+                    "✓ Key nhận thành công (${result.pairingKey.size} bytes)",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                // Chuyển sang Bluetooth fragment
                 requireActivity().supportFragmentManager.beginTransaction()
                     .replace(
                         com.example.uwb.R.id.fragment_container,
