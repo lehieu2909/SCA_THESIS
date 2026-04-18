@@ -36,13 +36,9 @@
 #include <mbedtls/md.h>
 #include "tag_config.h"
 
-// DW3000 — comment ra nếu chưa có phần cứng UWB
-#define UWB_ENABLED 0
-#if UWB_ENABLED
 #include <SPI.h>
 #include "dw3000.h"
 extern dwt_txconfig_t txconfig_options;
-#endif
 
 #define LED_PIN 48
 
@@ -471,10 +467,13 @@ static bool connectToServer() {
         }
 
         uint8_t response[32];
+        printHex("[AUTH] Key:       ", pairingKey,       16);
+        printHex("[AUTH] Challenge:  ", receivedChallenge, 16);
         if (!computeHMAC(pairingKey, 16, receivedChallenge, 16, response)) {
             pClient->disconnect(); return false;
         }
-        pAuthChar->writeValue(response, 32);
+        printHex("[AUTH] HMAC resp:  ", response, 32);
+        pAuthChar->writeValue(response, 32, true);  // true = WRITE_WITH_RESPONSE, anchor dùng PROPERTY_WRITE
         Serial.println("[bleTask] HMAC response sent");
 
         xEventGroupWaitBits(sysEvents, EVT_AUTHED, pdFALSE, pdFALSE, pdMS_TO_TICKS(2000));
